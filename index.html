@@ -53,6 +53,17 @@
   #dirtyMark { color: var(--err); font-weight: 600; }
   #editor { flex: 1; width: 100%; border: 0; padding: 12px 16px; font: 15px/1.6 Consolas, "BIZ UDGothic", "MS Gothic", monospace; resize: none; outline: none; background: var(--panel); }
   #editor:disabled { background: var(--bg); }
+  #mdView { flex: 1; overflow: auto; padding: 16px 24px; background: var(--panel); line-height: 1.7; word-wrap: break-word; }
+  #mdView h1, #mdView h2 { border-bottom: 1px solid var(--line); padding-bottom: .2em; }
+  #mdView pre { background: #f6f8fa; padding: 10px 12px; border-radius: 6px; overflow: auto; }
+  #mdView code { font-family: Consolas, "BIZ UDGothic", monospace; background: #f0f0f0; padding: 0 .3em; border-radius: 3px; }
+  #mdView pre code { background: none; padding: 0; }
+  #mdView blockquote { margin: 0 0 1em; padding: 0 1em; color: var(--muted); border-left: 4px solid var(--line); }
+  #mdView table { border-collapse: collapse; margin: 0 0 1em; }
+  #mdView th, #mdView td { border: 1px solid var(--line); padding: 4px 10px; }
+  #mdView th { background: #f6f8fa; }
+  #mdView li.task { list-style: none; margin-left: -1.3em; }
+  #mdView hr { border: 0; border-top: 1px solid var(--line); margin: 1.5em 0; }
   .item { display: flex; align-items: center; gap: 4px; padding: 3px 8px; cursor: pointer; white-space: nowrap; user-select: none; }
   .item:hover { background: #f2f2f2; }
   .item.selected { background: var(--sel); }
@@ -90,10 +101,12 @@
       <span id="fileName">ノートが選ばれていません</span>
       <span id="dirtyMark" class="hidden" title="保存していない変更があります">● 未保存</span>
       <span style="flex:1"></span>
+      <button id="btnMd" disabled title="Markdown として表示（表示中は編集できません）">MD表示</button>
       <button id="btnSave" class="primary" disabled title="Ctrl+S">保存</button>
     </div>
     <div id="welcome">左の「フォルダ選択」で、ノートを置く親フォルダを選んでください。<br>次からは前回のフォルダが開きます。</div>
     <textarea id="editor" class="hidden" spellcheck="false"></textarea>
+    <div id="mdView" class="hidden"></div>
   </section>
 </main>
 <div id="findDlg" class="hidden" role="dialog" aria-label="文字の検索・置き換え">
@@ -188,7 +201,7 @@ async function openRoot(handle) {
   $('btnSave').disabled = true;
   $('btnRestore').classList.add('hidden');
   $('btnNewFolder').disabled = $('btnNewNote').disabled = $('btnFind').disabled = $('fQuery').disabled = false;
-  clearResults(); $('fQuery').value = ''; fileSearch(); updateReplaceState();
+  clearResults(); $('fQuery').value = ''; fileSearch(); refreshState();
   $('rootName').textContent = '📁 ' + handle.name;
   await renderTree();
 }
@@ -336,15 +349,14 @@ async function openNote(node, row) {
   savedText = r.text;
   const ed = $('editor');
   ed.value = savedText;
-  ed.classList.remove('hidden');
   $('welcome').classList.add('hidden');
   $('fileName').textContent = node.path;
   $('btnSave').disabled = false;
   setDirty(false);
-  updateReplaceState();
+  refreshState();
   selectedDir = node.parent || selectedDir;
   if (row) markSelected(row); else await revealInTree(node.path);   // 検索から開いたら、木もその場所へ
-  ed.focus();
+  if (!mdMode) ed.focus();
   return true;
 }
 
@@ -475,7 +487,7 @@ async function deleteEntry(node) {
     $('editor').value = ''; $('editor').classList.add('hidden'); $('welcome').classList.remove('hidden');
     $('welcome').textContent = '左の木からノートを選ぶか、「新しいノート」を作ってください。';
     $('fileName').textContent = 'ノートが選ばれていません'; $('btnSave').disabled = true;
-    updateReplaceState();
+    refreshState();
   }
   if (selectedDir && (selectedDir.path === node.path || selectedDir.path.startsWith(node.path + '/'))) selectedDir = node.parent;
   openPaths.forEach(p => { if (p === node.path || p.startsWith(node.path + '/')) openPaths.delete(p); });
@@ -621,13 +633,20 @@ async function search() {
 
 // ---------- 置き換え（今開いているファイルだけ。ディスクには書かず、編集画面の中身を置きかえる） ----------
 let plan = null;   // 置き換えの見本：{ path, before, after, count }
-function updateReplaceState() {
-  $('btnPreview').disabled = !current;
-  $('replaceHint').textContent = current ? '' : 'ファイルを開いてから置き換えてください。';
-  if (!current) { plan = null; const b = $('btnReplace'); if (b) b.disabled = true; }
+// 開いているファイルと「MD表示」かどうかで、見せる画面とボタンをそろえる
+function refreshState() {
+  const ed = $('editor'), view = !!current && mdMode;
+  ed.classList.toggle('hidden', !current || mdMode);
+  $('mdView').classList.toggle('hidden', !view);
+  if (view) $('mdView').innerHTML = renderMarkdown(ed.value);   // 未保存の変更も含めて見せる
+  $('btnMd').disabled = !current;
+  $('btnMd').textContent = mdMode ? '編集に戻る' : 'MD表示';
+  $('btnPreview').disabled = !current || mdMode;
+  $('replaceHint').textContent = !current ? 'ファイルを開いてから置き換えてください。' : mdMode ? 'MD表示中は置き換えできません（「編集に戻る」を押してください）。' : '';
+  if (!current || mdMode) { plan = null; const b = $('btnReplace'); if (b) b.disabled = true; }
 }
 function previewReplace() {
-  if (!current) { updateReplaceState(); return; }
+  if (!current || mdMode) { refreshState(); return; }
   const re = makeRe(true); if (!re) return;
   const rep = $('sReplace').value, before = $('editor').value;
   // 正規表現のときは $1 などが使える。ふつうの検索のときは、置き換える文字をそのまま入れる
@@ -653,6 +672,7 @@ function sample(b, a, ln) {
 }
 function applyReplace() {
   const ed = $('editor');
+  if (mdMode) { refreshState(); return false; }
   // 見本のあとでファイルや中身が変わっていたら、置きかえない
   if (!plan || !current || current.path !== plan.path || ed.value !== plan.before) {
     $('searchErr').textContent = '見本のあとで中身が変わりました。もう一度「置き換えの見本」を押してください。';
@@ -670,10 +690,105 @@ function applyReplace() {
   return true;
 }
 
+// ---------- MD表示（小さな自作の Markdown 変換。外のライブラリは使わない） ----------
+// 安全のため：文字はすべてエスケープし、HTML は決まった形からだけ作る。ファイルの中の生の HTML は文字として見せる
+let mdMode = false;   // ファイルを切りかえても覚えておく
+const esc = t => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+function safeUrl(u) {
+  u = u.trim();
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(u.replace(/[\u0000- ]/g, ''));
+  return !scheme || /^(https?|mailto)$/i.test(scheme[1]) ? u : null;   // javascript: などは無効
+}
+function inline(text) {
+  const keep = [];
+  const hold = h => '\u0000' + (keep.push(h) - 1) + '\u0000';
+  text = text.replace(/(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/g, (_, b, c) => hold('<code>' + esc(c.trim()) + '</code>'));
+  text = text.replace(/!?\[([^\]]*)\]\(\s*<?([^)\s>]*)>?(?:\s+"[^"]*")?\s*\)/g, (m, label, url) => {
+    const u = safeUrl(url), img = m[0] === '!';
+    const shown = img ? '画像：' + (label || url) : label;
+    return hold(u === null ? esc(shown) : '<a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + inline(shown) + '</a>');
+  });
+  text = text.replace(/<(https?:\/\/[^\s>]+)>/g, (_, u) => hold('<a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + esc(u) + '</a>'));
+  text = esc(text)
+    .replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, '<strong>$1</strong>').replace(/__(?=\S)([\s\S]*?\S)__/g, '<strong>$1</strong>')
+    .replace(/\*(?=\S)([\s\S]*?\S)\*/g, '<em>$1</em>').replace(/(^|[^\w])_(?=\S)([\s\S]*?\S)_(?!\w)/g, '$1<em>$2</em>')
+    .replace(/~~(?=\S)([\s\S]*?\S)~~/g, '<del>$1</del>');
+  return text.replace(/\u0000(\d+)\u0000/g, (_, i) => keep[i]);
+}
+const RE_FENCE = /^ {0,3}(```+|~~~+)(.*)$/, RE_HEAD = /^ {0,3}(#{1,6})(?:\s+(.*?))?\s*#*\s*$/, RE_HR = /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/,
+  RE_LIST = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/, RE_QUOTE = /^ {0,3}>\s?(.*)$/, RE_TSEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+const indentOf = l => l.replace(/\t/g, '    ').match(/^ */)[0].length;
+const cells = l => l.trim().replace(/^\|/, '').replace(/\|$/, '').split(/(?<!\\)\|/).map(c => c.trim().replace(/\\\|/g, '|'));
+function renderMarkdown(src) { return blocks(src.replace(/\r\n?/g, '\n').split('\n')); }
+function blocks(lines) {
+  let out = '', i = 0;
+  const startsBlock = l => RE_FENCE.test(l) || RE_HEAD.test(l) || RE_HR.test(l) || RE_LIST.test(l) || RE_QUOTE.test(l);
+  while (i < lines.length) {
+    const l = lines[i];
+    if (!l.trim()) { i++; continue; }
+    let m;
+    if ((m = RE_FENCE.exec(l))) {
+      const body = []; i++;
+      while (i < lines.length && !new RegExp('^ {0,3}' + m[1][0] + '{' + m[1].length + ',}\\s*$').test(lines[i])) body.push(lines[i++]);
+      i++;
+      out += '<pre><code>' + esc(body.join('\n')) + '</code></pre>'; continue;
+    }
+    if ((m = RE_HEAD.exec(l))) { out += '<h' + m[1].length + '>' + inline(m[2] || '') + '</h' + m[1].length + '>'; i++; continue; }
+    if (RE_HR.test(l)) { out += '<hr>'; i++; continue; }
+    if (RE_QUOTE.test(l)) {
+      const q = []; while (i < lines.length && lines[i].trim() && (m = RE_QUOTE.exec(lines[i]) || [0, lines[i]])) { q.push(m[1]); i++; }
+      out += '<blockquote>' + blocks(q) + '</blockquote>'; continue;
+    }
+    if (l.includes('|') && i + 1 < lines.length && RE_TSEP.test(lines[i + 1]) && lines[i + 1].includes('-')) {
+      const head = cells(l), align = cells(lines[i + 1]).map(c => /^:-+:$/.test(c) ? 'center' : /-:$/.test(c) ? 'right' : /^:/.test(c) ? 'left' : '');
+      const td = (tag, c, k) => '<' + tag + (align[k] ? ' style="text-align:' + align[k] + '"' : '') + '>' + inline(c) + '</' + tag + '>';
+      let t = '<table><thead><tr>' + head.map((c, k) => td('th', c, k)).join('') + '</tr></thead><tbody>';
+      i += 2;
+      while (i < lines.length && lines[i].trim() && lines[i].includes('|')) { const r = cells(lines[i++]); t += '<tr>' + head.map((_, k) => td('td', r[k] || '', k)).join('') + '</tr>'; }
+      out += t + '</tbody></table>'; continue;
+    }
+    if (RE_LIST.test(l)) {
+      const items = [], kind = x => /\d/.test(RE_LIST.exec(x)[2]), ordered = kind(l);
+      while (i < lines.length) {
+        const cur = lines[i];
+        if (items.length && RE_LIST.test(cur) && indentOf(cur) <= indentOf(l) && kind(cur) !== ordered) break;   // 箇条書きと番号付きは別の一覧
+        if (!cur.trim()) { if (i + 1 < lines.length && (RE_LIST.test(lines[i + 1]) || indentOf(lines[i + 1]) > indentOf(l))) { i++; continue; } break; }
+        if (!RE_LIST.test(cur) && indentOf(cur) <= indentOf(l) && items.length && startsBlock(cur)) break;
+        items.push(cur); i++;
+      }
+      out += list(items); continue;
+    }
+    const para = [];
+    while (i < lines.length && lines[i].trim() && !startsBlock(lines[i]) && !(lines[i].includes('|') && i + 1 < lines.length && RE_TSEP.test(lines[i + 1]) && lines[i + 1].includes('-'))) para.push(lines[i++].trim());
+    out += '<p>' + para.map(inline).join('<br>') + '</p>';
+  }
+  return out;
+}
+// 箇条書き・番号付き・チェックボックス（字下げで入れ子）
+function list(lines) {
+  const base = indentOf(lines[0]), first = RE_LIST.exec(lines[0]), ordered = /\d/.test(first[2]);
+  const items = [];
+  for (const l of lines) {
+    const m = RE_LIST.exec(l);
+    if (m && indentOf(l) <= base) items.push({ text: m[3], sub: [] });
+    else if (items.length) items[items.length - 1].sub.push(l);
+  }
+  const start = ordered && parseInt(first[2]) !== 1 ? ' start="' + parseInt(first[2]) + '"' : '';
+  return '<' + (ordered ? 'ol' + start : 'ul') + '>' + items.map(it => {
+    const task = /^\[([ xX])\]\s+(.*)$/.exec(it.text);
+    const head = task ? '<input type="checkbox" disabled' + (task[1] === ' ' ? '' : ' checked') + '> ' + inline(task[2]) : inline(it.text);
+    const subLines = it.sub.filter(x => x.trim());
+    const sub = !subLines.length ? '' : RE_LIST.test(subLines[0]) ? list(subLines) : blocks(subLines.map(x => x.trim()));
+    return '<li' + (task ? ' class="task"' : '') + '>' + head + sub + '</li>';
+  }).join('') + '</' + (ordered ? 'ol' : 'ul') + '>';
+}
+function toggleMd() { if (!current) return; mdMode = !mdMode; refreshState(); if (!mdMode) $('editor').focus(); }
+
 // ---------- 操作 ----------
 $('btnPick').onclick = pickFolder;
 $('btnRestore').onclick = restore;
 $('btnSave').onclick = save;
+$('btnMd').onclick = toggleMd;
 $('btnSearch').onclick = search;
 $('btnPreview').onclick = previewReplace;
 $('sQuery').addEventListener('keydown', e => { if (e.key === 'Enter') search(); });

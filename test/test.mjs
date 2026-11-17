@@ -17,9 +17,9 @@ await c.send('Page.navigate', { url: PAGE }); await sleep(1000);
 const J = c.evalJs; let fails = 0;
 const ok = (name, cond, extra = '') => { console.log((cond ? 'OK  ' : 'NG  ') + name + (extra ? '  ' + extra : '')); if (!cond) fails++; };
 const msg = () => J(`document.getElementById('msg').className + ':' + document.getElementById('msg').textContent`);
-const click = async sel => { const r = await J(`(()=>{const b=document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect();return [b.x+b.width/2,b.y+b.height/2]})()`);
+const click = async sel => { const r = await J(`(()=>{const el=document.querySelector(${JSON.stringify(sel)});el.scrollIntoView({block:'nearest'});const b=el.getBoundingClientRect();return [b.x+b.width/2,b.y+b.height/2]})()`);
   for (const type of ['mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, x: r[0], y: r[1], button: 'left', clickCount: 1 }); await sleep(400); };
-const rclick = async sel => { const r = await J(`(()=>{const b=document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect();return [b.x+b.width/2,b.y+b.height/2]})()`);
+const rclick = async sel => { const r = await J(`(()=>{const el=document.querySelector(${JSON.stringify(sel)});el.scrollIntoView({block:'nearest'});const b=el.getBoundingClientRect();return [b.x+b.width/2,b.y+b.height/2]})()`);
   for (const type of ['mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, x: r[0], y: r[1], button: 'right', clickCount: 1 }); await sleep(300); };
 const setVal = (id, v) => J(`(()=>{const e=document.getElementById('${id}'); if (e.type==='checkbox') e.checked=${JSON.stringify(v)}; else e.value=${JSON.stringify(v)}; e.dispatchEvent(new Event('input')); return 1})()`);
 const hits = () => J(`[...document.querySelectorAll('#results .hit')].map(e=>e.textContent)`);
@@ -236,6 +236,37 @@ await setVal('fQuery', 'crlf'); await sleep(800);
 await click('#fResults .hit'); await sleep(600);
 ok('続けて別の結果も押せる', (await revealed('crlf.txt')).includes('"sel":["crlf.txt"]') && (await J(`document.getElementById('fileName').textContent`)) === 'crlf.txt', await revealed('crlf.txt'));
 await setVal('fQuery', ''); await J(`closeFind(); 1`);
+// ===== MD表示 =====
+const MD = ['# 見出し1', '## 見出し2', '', '- りんご', '  - 小さいりんご', '- **太字** と *斜体* と `x<y`', '', '1. 一番', '2. 二番', '',
+  '- [ ] まだ', '- [x] できた', '', '> 引用の文', '', '| 名前 | 数 |', '|:--|--:|', '| 柿 | 3 |', '', '---', '',
+  '```', '<b>コードの中</b>', '```', '', '[安全なリンク](https://example.com/a?b=1&c=2)', '[危ないリンク](javascript:alert(1))', '[危ない2](JaVaScRiPt:alert(1))',
+  '<script>window.__pwned=1</script>', '<img src=x onerror="window.__pwned=2">', '<a href="javascript:alert(1)">生のリンク</a>'].join('\n');
+await J(`(async()=>{const r=await navigator.storage.getDirectory();const w=await (await r.getFileHandle('md.md',{create:true})).createWritable();await w.write(${JSON.stringify(MD)});await w.close();await renderTree();return 1})()`);
+await click('.item[data-path="md.md"]'); await sleep(300);
+ok('ファイルを開くと「MD表示」ボタン', (await J(`document.getElementById('btnMd').textContent`)) === 'MD表示' && !(await J(`document.getElementById('btnMd').disabled`)));
+await J(`(()=>{const e=document.getElementById('editor');e.focus();e.setSelectionRange(e.value.length,e.value.length);return 1})()`);
+await c.send('Input.insertText', { text: '\n\n未保存の行' });
+await click('#btnMd'); await sleep(300);
+const mv = sel => J(`document.querySelectorAll('#mdView ${sel}').length`);
+ok('表示中は編集画面を隠し、MD を出す', (await J(`document.getElementById('editor').classList.contains('hidden') && !document.getElementById('mdView').classList.contains('hidden')`)) && (await J(`document.getElementById('btnMd').textContent`)) === '編集に戻る');
+ok('見出し・箇条書き（入れ子）・番号付き', (await mv('h1')) === 1 && (await mv('h2')) === 1 && (await mv('ul ul li')) === 1 && (await mv('ol li')) === 2);
+ok('太字・斜体・行内コード（中の < は文字）', (await mv('strong')) === 1 && (await mv('em')) === 1 && (await J(`[...document.querySelectorAll('#mdView p code, #mdView li code')].map(e=>e.textContent).join()`)) === 'x<y');
+ok('コードのブロック（中の HTML は文字）', (await J(`document.querySelector('#mdView pre code').textContent`)) === '<b>コードの中</b>' && (await mv('pre b')) === 0);
+ok('引用・表（そろえ）・水平線', (await mv('blockquote')) === 1 && (await mv('table th')) === 2 && (await mv('table td')) === 2 && (await J(`document.querySelectorAll('#mdView td')[1].style.textAlign`)) === 'right' && (await mv('hr')) === 1);
+ok('チェックボックス（押せない）', (await mv('input[type=checkbox][disabled]')) === 2 && (await mv('input[type=checkbox]:checked')) === 1);
+ok('リンクは別のタブで開く', (await J(`(()=>{const a=document.querySelector('#mdView a');return a.getAttribute('href')+'|'+a.target+'|'+a.rel})()`)) === 'https://example.com/a?b=1&c=2|_blank|noopener noreferrer');
+ok('javascript: のリンクは無効', (await mv('a')) === 1 && !(await J(`[...document.querySelectorAll('#mdView a')].some(a=>/script/i.test(a.getAttribute('href')))`)));
+ok('生の HTML は動かさず文字で見せる', (await mv('script')) === 0 && (await mv('img')) === 0 && !(await J(`[...document.querySelectorAll('#mdView *')].some(e=>[...e.attributes].some(a=>/^on/i.test(a.name)))`)) && (await J(`document.getElementById('mdView').textContent.includes('<script>')`)) && (await J(`window.__pwned === undefined`)));
+ok('未保存の変更も含めて表示', (await J(`document.getElementById('mdView').textContent.includes('未保存の行')`)) && (await isDirty()));
+await J(`openFind(true); 1`);
+ok('表示中は置き換えできない', await J(`document.getElementById('btnPreview').disabled && document.getElementById('replaceHint').textContent.includes('MD表示中')`));
+await J(`closeFind(); 1`);
+await saveKey();
+ok('表示中も保存できる（未保存の変更を書く）', !(await isDirty()) && (await readOpfs('md.md')) === bytes(MD + '\n\n未保存の行'));
+await click('.item[data-path="crlf.txt"]'); await sleep(300);
+ok('ファイルを切りかえても MD表示のまま', (await J(`!document.getElementById('mdView').classList.contains('hidden') && document.getElementById('editor').classList.contains('hidden') && document.getElementById('mdView').textContent.includes('B$1')`)));
+await click('#btnMd'); await sleep(200);
+ok('「編集に戻る」で編集画面に戻る', (await J(`!document.getElementById('editor').classList.contains('hidden') && document.getElementById('mdView').classList.contains('hidden') && document.getElementById('btnMd').textContent === 'MD表示' && !document.getElementById('btnPreview').disabled`)));
 // ===== 一覧の幅 =====
 const sideW = () => J(`Math.round(document.getElementById('side').getBoundingClientRect().width)`);
 const dragSplit = async dx => { const r = await J(`(()=>{const b=document.getElementById('splitter').getBoundingClientRect();return [b.x+2,b.y+100]})()`);
