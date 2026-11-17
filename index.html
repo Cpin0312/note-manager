@@ -230,17 +230,20 @@ function makeItem(node, depth) {
     const kids = document.createElement('div');
     kids.className = 'children';
     wrap.appendChild(kids);
+    let gen = 0;   // 速い2回押しで、古い読み込みが重ねて足さないように
     const load = async () => {
-      kids.innerHTML = '';
+      const g = ++gen;
       try {
-        const items = (await listDir(node.handle)).map(h => makeItem({ handle: h, path: node.path ? node.path + '/' + h.name : h.name, parent: node }, depth + 1));
-        items.forEach(el => kids.appendChild(el));
+        const list = await listDir(node.handle);
+        if (g !== gen) return;
+        const items = list.map(h => makeItem({ handle: h, path: node.path ? node.path + '/' + h.name : h.name, parent: node }, depth + 1));
+        kids.replaceChildren(...items);
         await Promise.all(items.map(el => el.ready));
       } catch (e) { showMsg('フォルダを読めませんでした：' + node.path + ' ' + errText(e), 'err'); }
     };
     const setOpen = async open => {
       tw.textContent = open ? '▾' : '▸';
-      if (open) { openPaths.add(node.path); await load(); } else { openPaths.delete(node.path); kids.innerHTML = ''; }
+      if (open) { openPaths.add(node.path); await load(); } else { openPaths.delete(node.path); gen++; kids.replaceChildren(); }
     };
     node.reload = load;
     row.onclick = async () => {
