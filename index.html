@@ -343,9 +343,20 @@ async function openNote(node, row) {
   setDirty(false);
   updateReplaceState();
   selectedDir = node.parent || selectedDir;
-  if (row) markSelected(row);
+  if (row) markSelected(row); else await revealInTree(node.path);   // 検索から開いたら、木もその場所へ
   ed.focus();
   return true;
+}
+
+// 木で、親のフォルダを順に開き、そのファイルに印を付けて見える所までスクロールする
+async function revealInTree(path) {
+  const parts = path.split('/');
+  for (let i = 1; i < parts.length; i++) openPaths.add(parts.slice(0, i).join('/'));
+  await renderTree();
+  const row = document.querySelector('#tree .item[data-path="' + CSS.escape(path) + '"]');
+  if (!row) return;
+  markSelected(row);
+  row.scrollIntoView({ block: 'nearest' });
 }
 
 // 文字のファイルを読む。文字でなければ TypeError。text は改行を \n にそろえたもの
@@ -582,6 +593,7 @@ async function fileText(f) {
 }
 async function gotoLine(f, line) {
   if (!(current && current.path === f.path)) { if (!await openNote(f, null)) return; }
+  else await revealInTree(f.path);
   const ed = $('editor'), lines = ed.value.split('\n');
   let pos = 0; for (let i = 0; i < line - 1 && i < lines.length; i++) pos += lines[i].length + 1;
   ed.focus(); ed.setSelectionRange(pos, pos + (lines[line - 1] || '').length);

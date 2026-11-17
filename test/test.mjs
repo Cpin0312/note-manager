@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const srv = spawn('python3', ['-m', 'http.server', '8765', '--bind', '127.0.0.1', '-d', ROOT], { stdio: 'ignore' });
 await sleep(800);
+process.on('exit', () => srv.kill());   // 途中で落ちても、配る係を残さない
 const c = await launch({ profile: mkdtempSync(tmpdir() + '/nm-test-'), port: 9336 });
 let promptText = '', dialogs = [], lastDialog = '', confirmAnswer = true;
 c.on(m => { if (m.method === 'Page.javascriptDialogOpening') { dialogs.push(m.params.type); lastDialog = m.params.message; c.send('Page.handleJavaScriptDialog', { accept: m.params.type === 'confirm' ? confirmAnswer : m.params.type !== 'beforeunload', promptText }); } });
@@ -204,6 +205,37 @@ ok('開いていたファイルを消すと編集を閉じる', !(await exists('
 await J(`root.removeEntry = async () => { throw new DOMException('locked', 'NoModificationAllowedError') }; 1`);
 await rclick('.item[data-path="bin.png"]'); await click('#ctxDelete'); await sleep(400);
 ok('削除の失敗を画面に出す', (await msg()).startsWith('err:削除に失敗しました：bin.png') && (await exists('bin.png')), await msg());
+// ===== 検索の結果を押すと、木もそのファイルの場所へ =====
+await J(`(async()=>{const r=await navigator.storage.getDirectory();for(let i=0;i<60;i++) await r.getDirectoryHandle('d'+String(i).padStart(2,'0'),{create:true});
+ let d=await r.getDirectoryHandle('zz',{create:true}); d=await d.getDirectoryHandle('b',{create:true}); d=await d.getDirectoryHandle('c',{create:true});
+ const w=await (await d.getFileHandle('深い.md',{create:true})).createWritable(); await w.write('一行目\\nふかいところ\\n'); await w.close();
+ openPaths.clear(); openPaths.add(''); await renderTree(); document.getElementById('tree').scrollTop=0; return 1})()`);
+const revealed = p => J(`(()=>{const row=document.querySelector('#tree .item[data-path="'+${JSON.stringify(p)}+'"]'); if(!row) return 'no row';
+  const sel=[...document.querySelectorAll('#tree .item.selected')].map(e=>e.dataset.path); const t=document.getElementById('tree').getBoundingClientRect(), r=row.getBoundingClientRect();
+  return JSON.stringify({sel, visible: r.top>=t.top && r.bottom<=t.bottom, opened: ['zz','zz/b','zz/b/c'].every(x=>openPaths.has(x))})})()`);
+const want = p => JSON.stringify({ sel: [p], visible: true, opened: true });
+ok('はじめは木で閉じていて見えない', !(await J(`!!document.querySelector('#tree .item[data-path="zz/b/c/深い.md"]')`)));
+await setVal('fQuery', '深い'); await sleep(800);
+await click('#fResults .hit'); await sleep(600);
+ok('ファイル検索の結果を押すと、親を開き・印を付け・見える所へ', (await revealed('zz/b/c/深い.md')) === want('zz/b/c/深い.md'), await revealed('zz/b/c/深い.md'));
+ok('検索の欄と結果はそのまま', (await J(`document.getElementById('fQuery').value`)) === '深い' && (await fhits()).length === 1);
+await setVal('fQuery', 'ふかい'); await sleep(800);
+await J(`(async()=>{openPaths.clear(); openPaths.add(''); await renderTree(); document.getElementById('tree').scrollTop=0; return 1})()`);
+await click('#fResults .hit'); await sleep(600);
+ok('同じファイルで中身の結果を押しても、木が合う（その行も選ぶ）', (await revealed('zz/b/c/深い.md')) === want('zz/b/c/深い.md') && (await J(`(()=>{const e=document.getElementById('editor');return e.value.slice(e.selectionStart,e.selectionEnd)})()`)) === 'ふかいところ', await revealed('zz/b/c/深い.md'));
+// 窓の文字検索の結果
+await click('.item[data-path="crlf.txt"]'); await sleep(300);
+await J(`(async()=>{openPaths.clear(); openPaths.add(''); await renderTree(); document.getElementById('tree').scrollTop=0; return 1})()`);
+await J(`openFind(false); 1`);
+await setVal('sRegex', false); await setVal('sQuery', 'ふかい'); await click('#btnSearch'); await sleep(500);
+await click('#results .hit'); await sleep(600);
+ok('窓の文字検索の結果を押しても、木が合う', (await revealed('zz/b/c/深い.md')) === want('zz/b/c/深い.md'), await revealed('zz/b/c/深い.md'));
+ok('窓と結果はそのまま', (await J(`!document.getElementById('findDlg').classList.contains('hidden') && document.querySelectorAll('#results .hit').length === 1`)));
+// 続けて別の結果を押す
+await setVal('fQuery', 'crlf'); await sleep(800);
+await click('#fResults .hit'); await sleep(600);
+ok('続けて別の結果も押せる', (await revealed('crlf.txt')).includes('"sel":["crlf.txt"]') && (await J(`document.getElementById('fileName').textContent`)) === 'crlf.txt', await revealed('crlf.txt'));
+await setVal('fQuery', ''); await J(`closeFind(); 1`);
 // ===== 一覧の幅 =====
 const sideW = () => J(`Math.round(document.getElementById('side').getBoundingClientRect().width)`);
 const dragSplit = async dx => { const r = await J(`(()=>{const b=document.getElementById('splitter').getBoundingClientRect();return [b.x+2,b.y+100]})()`);

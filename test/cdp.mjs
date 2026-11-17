@@ -4,6 +4,7 @@ export async function launch({ profile, headless = true, port = 9333 }) {
   const args = [`--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', 'about:blank'];
   if (headless) args.unshift('--headless=new');
   const proc = spawn('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', args, { stdio: 'ignore' });
+  process.on('exit', () => proc.kill());   // 途中で落ちても Chrome を残さない
   let targets;
   for (let i = 0; i < 50; i++) {
     try { targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json(); if (targets.find(t => t.type === 'page')) break; } catch {}
