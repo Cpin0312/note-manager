@@ -18,20 +18,28 @@
   button:disabled { opacity: .5; cursor: default; }
   #rootName { color: var(--muted); }
   main { flex: 1; display: flex; min-height: 0; }
-  #side { width: 340px; min-width: 220px; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+  #side { width: 300px; flex: none; background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
+  #splitter { width: 5px; flex: none; cursor: col-resize; background: var(--line); }
+  #splitter:hover, #splitter.drag { background: var(--accent); }
   #tree { flex: 1; overflow: auto; padding: 6px 0; }
-  #search { padding: 8px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; }
-  #search .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-  #search input[type=text], #search select { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; min-width: 0; }
-  #search input[type=text] { flex: 1; }
-  #search input.bad { border-color: var(--err); background: #fde7e9; }
-  #search label { white-space: nowrap; font-size: 13px; }
+  #fileSearch { padding: 8px; border-bottom: 1px solid var(--line); }
+  input[type=text], select { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; min-width: 0; }
+  #fQuery { width: 100%; }
+  #fResults { max-height: 40%; overflow: auto; border-bottom: 1px solid var(--line); font-size: 13px; }
+  #findDlg { position: fixed; top: 70px; right: 24px; width: 520px; max-width: calc(100vw - 16px); max-height: calc(100vh - 90px); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.22); display: flex; flex-direction: column; z-index: 20; }
+  #findTitle { display: flex; align-items: center; padding: 6px 6px 6px 12px; border-bottom: 1px solid var(--line); cursor: move; user-select: none; font-weight: 600; background: #fafafa; border-radius: 8px 8px 0 0; }
+  #findTitle button { padding: 2px 10px; }
+  #findBody { padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; }
+  #findBody .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  #findBody input[type=text] { flex: 1; }
+  #findBody input.bad { border-color: var(--err); background: #fde7e9; }
+  #findBody label { white-space: nowrap; font-size: 13px; }
   #searchErr { color: var(--err); font-size: 13px; }
-  #results { max-height: 45%; overflow: auto; border-bottom: 1px solid var(--line); font-size: 13px; }
-  #results .hit { padding: 3px 8px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #results .hit:hover { background: #f2f2f2; }
-  #results .head { padding: 4px 8px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
-  #results .ln { color: var(--muted); }
+  #results { overflow: auto; border-top: 1px solid var(--line); font-size: 13px; min-height: 0; flex: 1; }
+  .hit { padding: 3px 8px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hit:hover { background: #f2f2f2; }
+  .rhead { padding: 4px 8px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+  .ln { color: var(--muted); }
   #results .file { font-weight: 600; padding: 6px 8px 2px; }
   #results .before { color: var(--err); text-decoration: line-through; padding: 0 8px 0 20px; white-space: pre-wrap; word-break: break-all; }
   #results .after { color: var(--ok); padding: 0 8px 2px 20px; white-space: pre-wrap; word-break: break-all; }
@@ -64,32 +72,18 @@
   <button id="btnRestore" class="hidden">前回のフォルダを開く</button>
   <span id="rootName"></span>
   <span style="flex:1"></span>
+  <button id="btnFind" disabled title="Ctrl+F / Ctrl+H">文字の検索・置き換え</button>
   <button id="btnNewFolder" disabled>新しいフォルダ</button>
   <button id="btnNewNote" disabled>新しいノート</button>
 </header>
 <div id="msg"></div>
 <main>
   <nav id="side">
-    <div id="search">
-      <div class="row">
-        <select id="sMode" title="探すもの"><option value="name">ファイル名</option><option value="text">文字</option></select>
-        <input type="text" id="sQuery" placeholder="検索（Enter）">
-        <button id="btnSearch" disabled>検索</button>
-      </div>
-      <div class="row">
-        <label><input type="checkbox" id="sRegex"> 正規表現</label>
-        <label><input type="checkbox" id="sCase"> 大文字小文字を区別</label>
-      </div>
-      <div class="row" id="replaceRow">
-        <input type="text" id="sReplace" placeholder="置き換える文字">
-        <select id="sScope" title="置き換える範囲"><option value="all">全部のファイル</option><option value="current">今のファイル</option></select>
-        <button id="btnPreview" disabled>置き換えの見本</button>
-      </div>
-      <div id="searchErr"></div>
-    </div>
-    <div id="results" class="hidden"></div>
+    <div id="fileSearch"><input type="text" id="fQuery" placeholder="ファイルを探す（名前・中身）" disabled></div>
+    <div id="fResults" class="hidden"></div>
     <div id="tree"></div>
   </nav>
+  <div id="splitter" title="ドラッグで幅を変える"></div>
   <section id="editorPane">
     <div id="fileBar">
       <span id="fileName">ノートが選ばれていません</span>
@@ -101,6 +95,26 @@
     <textarea id="editor" class="hidden" spellcheck="false"></textarea>
   </section>
 </main>
+<div id="findDlg" class="hidden" role="dialog" aria-label="文字の検索・置き換え">
+  <div id="findTitle"><span style="flex:1">文字の検索・置き換え</span><button id="btnFindClose" title="閉じる（Esc）">×</button></div>
+  <div id="findBody">
+    <div class="row">
+      <input type="text" id="sQuery" placeholder="探す文字（Enter）">
+      <button id="btnSearch">検索</button>
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="sRegex"> 正規表現</label>
+      <label><input type="checkbox" id="sCase"> 大文字小文字を区別</label>
+    </div>
+    <div class="row">
+      <input type="text" id="sReplace" placeholder="置き換える文字">
+      <select id="sScope" title="置き換える範囲"><option value="all">全部のファイル</option><option value="current">今のファイル</option></select>
+      <button id="btnPreview">置き換えの見本</button>
+    </div>
+    <div id="searchErr"></div>
+  </div>
+  <div id="results" class="hidden"></div>
+</div>
 <div id="ctxMenu" class="hidden"><div id="ctxDelete">削除</div></div>
 <script>
 'use strict';
@@ -172,8 +186,8 @@ async function openRoot(handle) {
   $('fileName').textContent = 'ノートが選ばれていません';
   $('btnSave').disabled = true;
   $('btnRestore').classList.add('hidden');
-  $('btnNewFolder').disabled = $('btnNewNote').disabled = $('btnSearch').disabled = $('btnPreview').disabled = false;
-  clearResults();
+  $('btnNewFolder').disabled = $('btnNewNote').disabled = $('btnFind').disabled = $('fQuery').disabled = false;
+  clearResults(); $('fQuery').value = ''; fileSearch();
   $('rootName').textContent = '📁 ' + handle.name;
   await renderTree();
 }
@@ -418,7 +432,7 @@ function showCtx(x, y, node) {
   m.classList.remove('hidden');
 }
 document.addEventListener('click', () => $('ctxMenu').classList.add('hidden'));
-document.addEventListener('keydown', e => { if (e.key === 'Escape') $('ctxMenu').classList.add('hidden'); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { $('ctxMenu').classList.add('hidden'); closeFind(); } });
 
 async function* walk(dir, path) {
   for await (const [name, h] of dir.entries()) {
@@ -452,7 +466,7 @@ async function deleteEntry(node) {
   if (selectedDir && (selectedDir.path === node.path || selectedDir.path.startsWith(node.path + '/'))) selectedDir = node.parent;
   openPaths.forEach(p => { if (p === node.path || p.startsWith(node.path + '/')) openPaths.delete(p); });
   await renderTree();
-  clearResults();
+  clearResults(); fileSearch();
   showMsg('削除しました：' + node.path, 'ok');
   return true;
 }
@@ -470,20 +484,94 @@ function makeRe(global) {
   catch (e) { box.classList.add('bad'); $('searchErr').textContent = '正規表現がまちがっています：' + e.message; return null; }
 }
 function clearResults() { $('results').replaceChildren(); $('results').classList.add('hidden'); plan = null; }
-function resultsHead(text, extra) {
-  const r = $('results'); r.replaceChildren(); r.classList.remove('hidden');
-  const h = document.createElement('div'); h.className = 'head';
+function resultsHead(text, extra, box = $('results')) {
+  box.replaceChildren(); box.classList.remove('hidden');
+  const h = document.createElement('div'); h.className = 'rhead';
   const t = document.createElement('span'); t.textContent = text; t.style.flex = '1'; h.appendChild(t);
   if (extra) h.appendChild(extra);
-  const x = document.createElement('button'); x.textContent = '閉じる'; x.onclick = clearResults; h.appendChild(x);
-  r.appendChild(h);
+  box.appendChild(h);
 }
-function addHit(label, onclick, lineNo) {
+function addHit(label, onclick, lineNo, box = $('results')) {
   const d = document.createElement('div'); d.className = 'hit'; d.title = label;
   if (lineNo) { const s = document.createElement('span'); s.className = 'ln'; s.textContent = lineNo; d.appendChild(s); }
   d.appendChild(document.createTextNode(label)); d.onclick = onclick;
-  $('results').appendChild(d);
+  box.appendChild(d);
 }
+
+// ---------- ファイル検索（左の一覧の上）：名前と中身の両方。1ファイル1行 ----------
+const CONTENT_MAX = 5 * 1024 * 1024;   // これより大きいファイルの中身は読まない（固まらないため）
+let fGen = 0, fTimer = 0;
+function fileSearchSoon() {   // 入力が止まってから探す。前の結果は、まちがえて押さないよう先に消す
+  clearTimeout(fTimer); fGen++;
+  if ($('fQuery').value.trim() && root) resultsHead('探しています…', null, $('fResults'));
+  fTimer = setTimeout(fileSearch, 300);
+}
+async function fileSearch() {
+  const q = $('fQuery').value.trim().toLowerCase(), box = $('fResults'), g = ++fGen;
+  if (!q || !root) { box.replaceChildren(); box.classList.add('hidden'); return; }
+  resultsHead('探しています…', null, box);
+  let n = 0, more = false;
+  try {
+    for await (const f of walk(root, '')) {
+      if (g !== fGen) return;   // 新しい入力が来たら、古い検索はやめる
+      if (n >= MAX_HITS) { more = true; break; }
+      if (f.handle.name.toLowerCase().includes(q)) { n++; addHit('［名前］' + f.path, () => openNote(f, null), '', box); continue; }
+      let t;
+      try {
+        if (!(current && current.path === f.path) && (await f.handle.getFile()).size > CONTENT_MAX) continue;
+        t = (await fileText(f)).text;
+      } catch (e) { continue; }   // 文字でないファイルの中身は読まない
+      if (g !== fGen) return;
+      const lines = t.split('\n'), i = lines.findIndex(l => l.toLowerCase().includes(q));
+      if (i >= 0) { n++; addHit('［中身］' + f.path + ' — ' + (i + 1) + ': ' + lines[i].trim().slice(0, 80), () => gotoLine(f, i + 1), '', box); }
+    }
+  } catch (e) { showMsg('ファイル検索の途中で読めませんでした：' + errText(e), 'err'); }
+  if (g !== fGen) return;
+  box.firstChild.firstChild.textContent = n + ' 個のファイル' + (more ? '（多いので ' + MAX_HITS + ' 件まで）' : '');
+}
+
+// ---------- 文字の検索・置き換えの窓 ----------
+function openFind(focusReplace) {
+  if (!root) return;
+  $('findDlg').classList.remove('hidden');
+  const el = $(focusReplace ? 'sReplace' : 'sQuery');
+  // 編集中に選んでいる文字があれば、探す文字に入れる
+  const ed = $('editor'), sel = ed.value.slice(ed.selectionStart, ed.selectionEnd);
+  if (document.activeElement === ed && sel && !sel.includes('\n')) { $('sQuery').value = sel; $('sQuery').dispatchEvent(new Event('input')); }
+  el.focus(); el.select();
+}
+function closeFind() { $('findDlg').classList.add('hidden'); }
+// タイトルをドラッグして窓を動かす（画面の外に出さない）
+$('findTitle').addEventListener('pointerdown', e => {
+  if (e.target.tagName === 'BUTTON') return;
+  const d = $('findDlg'), r = d.getBoundingClientRect(), dx = e.clientX - r.left, dy = e.clientY - r.top;
+  const move = ev => {
+    d.style.left = Math.min(Math.max(0, ev.clientX - dx), innerWidth - 80) + 'px';
+    d.style.top = Math.min(Math.max(0, ev.clientY - dy), innerHeight - 40) + 'px';
+    d.style.right = 'auto';
+  };
+  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); };
+  addEventListener('pointermove', move); addEventListener('pointerup', up);
+  e.preventDefault();
+});
+
+// ---------- 一覧の幅（仕切りをドラッグ。localStorage に覚える） ----------
+const SIDE_MIN = 180, SIDE_DEFAULT = 300, SIDE_KEY = 'note-manager.sideWidth';
+const sideMax = () => Math.max(SIDE_MIN, Math.min(800, innerWidth - 320));
+function setSideWidth(w) { w = Math.round(Math.min(Math.max(+w || SIDE_DEFAULT, SIDE_MIN), sideMax())); $('side').style.width = w + 'px'; return w; }
+(() => { let w = SIDE_DEFAULT; try { w = +localStorage.getItem(SIDE_KEY) || SIDE_DEFAULT; } catch (e) {} setSideWidth(w); })();
+$('splitter').addEventListener('pointerdown', e => {
+  const sp = $('splitter'), startX = e.clientX, startW = $('side').getBoundingClientRect().width;
+  sp.classList.add('drag');
+  const move = ev => setSideWidth(startW + ev.clientX - startX);
+  const up = () => {
+    sp.classList.remove('drag'); removeEventListener('pointermove', move); removeEventListener('pointerup', up);
+    try { localStorage.setItem(SIDE_KEY, String(parseInt($('side').style.width))); } catch (e) {}   // 覚えられなくても動く
+  };
+  addEventListener('pointermove', move); addEventListener('pointerup', up);
+  e.preventDefault();
+});
+addEventListener('resize', () => setSideWidth(parseInt($('side').style.width)));
 // 今開いているファイルは、画面の文（未保存も含む）で探す
 async function fileText(f) {
   if (current && current.path === f.path) return { text: $('editor').value, bom: current.bom, crlf: current.crlf };
@@ -500,14 +588,12 @@ async function gotoLine(f, line) {
 async function search() {
   if (!root) return;
   const re = makeRe(false); if (!re) return;
-  const byName = $('sMode').value === 'name';
   plan = null;
   resultsHead('検索中…');
   let n = 0, files = 0, more = false;
   try {
     for await (const f of walk(root, '')) {
       if (n >= MAX_HITS) { more = true; break; }
-      if (byName) { if (re.test(f.handle.name)) { n++; addHit(f.path, () => gotoLine(f, 1)); } continue; }
       let t; try { t = (await fileText(f)).text; } catch (e) { continue; }   // 文字でないファイルは飛ばす
       let found = false;
       t.split('\n').forEach((line, i) => {
@@ -515,7 +601,7 @@ async function search() {
       });
     }
   } catch (e) { showMsg('検索の途中で読めませんでした：' + errText(e), 'err'); }
-  $('results').firstChild.firstChild.textContent = (byName ? n + ' 個のファイル' : files + ' 個のファイルに ' + n + ' か所') + (more ? '（多いので ' + MAX_HITS + ' 件まで）' : '');
+  $('results').firstChild.firstChild.textContent = (files + ' 個のファイルに ' + n + ' か所') + (more ? '（多いので ' + MAX_HITS + ' 件まで）' : '');
 }
 
 let plan = null;   // 置き換えの見本：[{ f, before, after, fmt, count }]
@@ -589,12 +675,19 @@ $('btnSave').onclick = save;
 $('btnSearch').onclick = search;
 $('btnPreview').onclick = previewReplace;
 $('sQuery').addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
-['sQuery', 'sRegex', 'sCase', 'sReplace', 'sScope', 'sMode'].forEach(id => $(id).addEventListener('input', () => { plan = null; const b = $('btnReplace'); if (b) b.disabled = true; }));
+$('btnFind').onclick = () => openFind(false);
+$('btnFindClose').onclick = closeFind;
+$('fQuery').addEventListener('input', fileSearchSoon);
+['sQuery', 'sRegex', 'sCase', 'sReplace', 'sScope'].forEach(id => $(id).addEventListener('input', () => { plan = null; const b = $('btnReplace'); if (b) b.disabled = true; }));
 $('btnNewFolder').onclick = () => { const n = prompt('新しいフォルダの名前'); if (n !== null) createEntry('dir', n); };
 $('btnNewNote').onclick = () => { const n = prompt('新しいノートの名前（.md が付きます）'); if (n !== null) createEntry('file', n); };  // 未保存の確かめは openNote でする
 $('editor').addEventListener('input', () => setDirty($('editor').value !== savedText));
 document.addEventListener('keydown', e => {
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(); }
+  if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+  const k = e.key.toLowerCase();
+  if (k === 's') { e.preventDefault(); save(); }
+  else if (k === 'f' && root) { e.preventDefault(); openFind(false); }
+  else if (k === 'h' && root) { e.preventDefault(); openFind(true); }
 });
 start();
 </script>

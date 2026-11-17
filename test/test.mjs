@@ -22,7 +22,7 @@ const rclick = async sel => { const r = await J(`(()=>{const b=document.querySel
   for (const type of ['mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, x: r[0], y: r[1], button: 'right', clickCount: 1 }); await sleep(300); };
 const setVal = (id, v) => J(`(()=>{const e=document.getElementById('${id}'); if (e.type==='checkbox') e.checked=${JSON.stringify(v)}; else e.value=${JSON.stringify(v)}; e.dispatchEvent(new Event('input')); return 1})()`);
 const hits = () => J(`[...document.querySelectorAll('#results .hit')].map(e=>e.textContent)`);
-const head = () => J(`document.querySelector('#results .head span') ? document.querySelector('#results .head span').textContent : ''`);
+const head = () => J(`document.querySelector('#results .rhead span') ? document.querySelector('#results .rhead span').textContent : ''`);
 const exists = p => J(`(async()=>{let d=await navigator.storage.getDirectory();const ps=${JSON.stringify(p)}.split('/');try{for(const x of ps.slice(0,-1))d=await d.getDirectoryHandle(x);for(const g of ['getFileHandle','getDirectoryHandle']){try{await d[g](ps.at(-1));return true}catch(e){}}return false}catch(e){return false}})()`);
 const readOpfs = p => J(`(async()=>{let d=await navigator.storage.getDirectory();const ps=${JSON.stringify(p)}.split('/');for(const x of ps.slice(0,-1))d=await d.getDirectoryHandle(x);const b=new Uint8Array(await (await (await d.getFileHandle(ps.at(-1))).getFile()).arrayBuffer());return [...b].join(',')})()`);
 const bytes = s => [...Buffer.from(s, 'utf8')].join(',');
@@ -92,17 +92,53 @@ ok('離れるときに警告（beforeunload を止める）', await J(`(()=>{con
 // 警告を断ったので、まだ同じページ。印を消して再読み込み
 await J(`setDirty(false)`);
 
-// ===== ファイル検索 =====
-await setVal('sMode', 'name'); await setVal('sQuery', '今日'); await click('#btnSearch'); await sleep(400);
-ok('ファイル名で下のフォルダまで探す', JSON.stringify(await hits()) === JSON.stringify(['メモ/今日.md']), JSON.stringify(await hits()));
-await click('#results .hit'); await sleep(400);
+// ===== ファイル検索（左の一覧の上、文字の検索とは別）=====
+const fhits = () => J(`[...document.querySelectorAll('#fResults .hit')].map(e=>e.textContent)`);
+await setVal('fQuery', '今日'); await sleep(800);
+ok('ファイル名で下のフォルダまで探す（名前の印）', JSON.stringify(await fhits()) === JSON.stringify(['［名前］メモ/今日.md']), JSON.stringify(await fhits()));
+ok('ファイル検索で文字の窓は開かない', await J(`document.getElementById('findDlg').classList.contains('hidden')`));
+await click('#fResults .hit'); await sleep(400);
 ok('結果を押すと開く', (await J(`document.getElementById('fileName').textContent`)) === 'メモ/今日.md');
-// ===== 文字検索 =====
-await setVal('sMode', 'text'); await setVal('sQuery', 'こんにちは'); await click('#btnSearch'); await sleep(400);
+await setVal('fQuery', 'こんにちは'); await sleep(800);
+ok('中身でも当たる（中身の印・最初の行）', JSON.stringify(await fhits()) === JSON.stringify(['［中身］メモ/今日.md — 2: こんにちは']), JSON.stringify(await fhits()));
+await click('.item[data-path="crlf.txt"]'); await sleep(300);
+await click('#fResults .hit'); await sleep(400);
+ok('中身の結果を押すとその行を開く', (await J(`(()=>{const e=document.getElementById('editor');return document.getElementById('fileName').textContent+'|'+e.value.slice(e.selectionStart,e.selectionEnd)})()`)) === 'メモ/今日.md|こんにちは');
+await setVal('fQuery', 'X ='); await sleep(800);
+ok('1ファイル1行・大文字小文字は気にしない', JSON.stringify(await fhits()) === JSON.stringify(['［中身］script.js — 1: let x = 1;']), JSON.stringify(await fhits()));
+await setVal('fQuery', 'xyz'); await setVal('fQuery', 'こんに'); await sleep(100);
+ok('入力が止まるまで探さない', (await fhits()).length === 0 || (await J(`document.querySelector('#fResults .rhead span').textContent`)) === '探しています…');
+await sleep(800);
+ok('止まったら探す', (await fhits()).length === 1, JSON.stringify(await fhits()));
+await setVal('fQuery', ''); await sleep(500);
+ok('空にすると結果が消える', await J(`document.getElementById('fResults').classList.contains('hidden')`));
+// ===== 文字の検索の窓 =====
+const key = async (k, code, vk, mod = 2) => { for (const type of ['rawKeyDown', 'keyUp']) await c.send('Input.dispatchKeyEvent', { type, key: k, code, windowsVirtualKeyCode: vk, modifiers: mod }); await sleep(200); };
+await key('f', 'KeyF', 70);
+ok('Ctrl+F で窓が開き、探す欄に入る', await J(`!document.getElementById('findDlg').classList.contains('hidden') && document.activeElement.id === 'sQuery'`));
+await key('Escape', 'Escape', 27, 0);
+ok('Esc で閉じる', await J(`document.getElementById('findDlg').classList.contains('hidden')`));
+await key('h', 'KeyH', 72);
+ok('Ctrl+H で窓が開き、置き換える欄に入る', await J(`!document.getElementById('findDlg').classList.contains('hidden') && document.activeElement.id === 'sReplace'`));
+await click('#btnFindClose');
+ok('× で閉じる', await J(`document.getElementById('findDlg').classList.contains('hidden')`));
+await click('#btnFind');
+ok('ボタンで開く', await J(`!document.getElementById('findDlg').classList.contains('hidden')`));
+// ドラッグで動かす
+const t0 = await J(`(()=>{const r=document.getElementById('findTitle').getBoundingClientRect();return [r.x+40,r.y+12]})()`);
+await c.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: t0[0], y: t0[1], button: 'left', clickCount: 1 });
+await c.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: t0[0] - 100, y: t0[1] + 60, button: 'left', buttons: 1 });
+await c.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: t0[0] - 100, y: t0[1] + 60, button: 'left', clickCount: 1 });
+const t1 = await J(`(()=>{const r=document.getElementById('findTitle').getBoundingClientRect();return [r.x+40,r.y+12]})()`);
+ok('タイトルをドラッグで動かせる', Math.round(t1[0] - t0[0]) === -100 && Math.round(t1[1] - t0[1]) === 60, JSON.stringify([t0, t1]));
+// 窓は左の一覧にかぶらない所へ戻しておく
+await J(`(()=>{const d=document.getElementById('findDlg');d.style.left='330px';d.style.top='60px';d.style.width='460px';return 1})()`);
+await setVal('sQuery', 'こんにちは'); await click('#btnSearch'); await sleep(400);
 ok('文字検索：ファイル名・行番号・行', JSON.stringify(await hits()) === JSON.stringify(['2 メモ/今日.md : こんにちは']), JSON.stringify(await hits()));
 await click('.item[data-path="crlf.txt"]'); await sleep(300);
 await click('#results .hit'); await sleep(400);
 ok('押すとその行を開く', (await J(`(()=>{const e=document.getElementById('editor');return document.getElementById('fileName').textContent+'|'+e.value.slice(e.selectionStart,e.selectionEnd)})()`)) === 'メモ/今日.md|こんにちは');
+ok('結果を押しても窓は閉じない', await J(`!document.getElementById('findDlg').classList.contains('hidden')`));
 ok('文字検索は文字でないファイルを飛ばす', !(await hits()).some(h => h.includes('bin.png')));
 // 大文字小文字
 await setVal('sQuery', 'LET'); await setVal('sCase', true); await click('#btnSearch'); await sleep(400);
@@ -152,7 +188,27 @@ ok('開いていたファイルを消すと編集を閉じる', !(await exists('
 await J(`root.removeEntry = async () => { throw new DOMException('locked', 'NoModificationAllowedError') }; 1`);
 await rclick('.item[data-path="bin.png"]'); await click('#ctxDelete'); await sleep(400);
 ok('削除の失敗を画面に出す', (await msg()).startsWith('err:削除に失敗しました：bin.png') && (await exists('bin.png')), await msg());
+// ===== 一覧の幅 =====
+const sideW = () => J(`Math.round(document.getElementById('side').getBoundingClientRect().width)`);
+const dragSplit = async dx => { const r = await J(`(()=>{const b=document.getElementById('splitter').getBoundingClientRect();return [b.x+2,b.y+100]})()`);
+  await c.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: r[0], y: r[1], button: 'left', clickCount: 1 });
+  await c.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: r[0] + dx, y: r[1], button: 'left', buttons: 1 });
+  await c.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: r[0] + dx, y: r[1], button: 'left', clickCount: 1 }); await sleep(200); };
+await J(`closeFind(); 1`);
+const w0 = await sideW(); await dragSplit(80);
+ok('仕切りのドラッグで幅が変わる', (await sideW()) === w0 + 80, w0 + ' → ' + await sideW());
+await dragSplit(-2000);
+ok('最小の幅で止まる', (await sideW()) === 180, String(await sideW()));
+await dragSplit(5000);
+ok('最大の幅で止まる（編集の場所を残す）', (await sideW()) === (await J(`sideMax()`)) && (await J(`innerWidth`)) - (await sideW()) >= 320, String(await sideW()));
+await dragSplit(-2000); await dragSplit(70);
+ok('幅を覚える', (await J(`localStorage.getItem('note-manager.sideWidth')`)) === '250', await J(`localStorage.getItem('note-manager.sideWidth')`));
 await c.send('Page.reload'); await sleep(1500);
+ok('次に開いても同じ幅', (await sideW()) === 250, String(await sideW()));
 ok('再読み込みで前回のフォルダが開く', (await J(`document.getElementById('rootName').textContent`)).length > 0 && (await J(`!!document.querySelector('.item[data-path="crlf.txt"]')`)), await J(`document.getElementById('rootName').textContent`));
+// localStorage が使えないときは決まった幅で動く
+await c.send('Page.addScriptToEvaluateOnNewDocument', { source: "Object.defineProperty(window, 'localStorage', { get() { throw new DOMException('blocked', 'SecurityError'); } });" });
+await c.send('Page.reload'); await sleep(1500);
+ok('localStorage が使えなくても決まった幅で開く', (await sideW()) === 300 && (await J(`!!document.querySelector('.item[data-path="crlf.txt"]')`)), String(await sideW()));
 console.log(fails ? `NG ${fails} 件` : 'ALL OK');
 c.close(); srv.kill(); process.exit(fails ? 1 : 0);
