@@ -135,6 +135,11 @@
       <input type="text" id="sReplace" placeholder="置き換える文字">
       <button id="btnPreview">置き換えの見本</button>
     </div>
+    <div class="row">
+      <button id="btnDelLines" title="当たった行をすべて消す（見本を見てから）">当たった行を削除</button>
+      <button id="btnMergeLines" title="当たった行を上から順に1行へつなぐ（見本を見てから）">当たった行をマージ</button>
+      <input type="text" id="sJoin" placeholder="つなぐ文字（\t も可）" style="max-width:150px">
+    </div>
     <div id="replaceHint" class="hint"></div>
     <div id="searchErr"></div>
   </div>
@@ -841,6 +846,7 @@ function refreshState() {
   $('btnMd').disabled = !current;
   $('btnMd').textContent = mdMode ? '編集に戻る' : 'MD表示';
   $('btnPreview').disabled = !current || mdMode;
+  $('btnDelLines').disabled = $('btnMergeLines').disabled = !current || mdMode || !$('sQuery').value;
   $('replaceHint').textContent = !current ? 'ファイルを開いてから置き換えてください。' : mdMode ? 'MD表示中は置き換えできません（「編集に戻る」を押してください）。' : '';
   if (!current || mdMode) { plan = null; const b = $('btnReplace'); if (b) b.disabled = true; }
 }
@@ -861,7 +867,36 @@ function previewReplace() {
       for (let i = 0; i < bl.length && shown < 5; i++) if (bl[i] !== al[i]) { shown++; sample(bl[i], al[i], i + 1); }
     } else sample(firstDiffLine(before, re), '（行の数が変わる置き換えです）', 0);
   }
-  plan = count ? { path: current.path, before, after, count } : null;
+  plan = count ? { path: current.path, before, after, count, done: count + ' か所を置き換えました' } : null;
+}
+function planButton(label, enabled) {
+  const go = document.createElement('button'); go.className = 'primary'; go.textContent = label; go.disabled = !enabled; go.id = 'btnReplace';
+  go.onclick = applyReplace; return go;
+}
+// 当たった行の削除・マージ（置き換えと同じ決まり：見本 → 押して、編集画面の中身を変える）
+const unescapeJoin = t => t.replace(/\\(\\|t|n)/g, (_, c) => c === 't' ? '\t' : c === 'n' ? '\n' : '\\');
+function previewLines(kind) {
+  if (!current || mdMode) { refreshState(); return; }
+  const re = makeRe(false); if (!re) return;
+  const before = $('editor').value, lines = before.split('\n');
+  const last = before.endsWith('\n') ? lines.length - 1 : lines.length;   // 最後の改行のあとは行ではない
+  const idx = []; for (let i = 0; i < last; i++) if (re.test(lines[i])) idx.push(i);
+  const need = kind === 'merge' ? 2 : 1, ok = idx.length >= need;
+  let after = before, joined = '';
+  if (ok) {
+    const hit = new Set(idx);
+    if (kind === 'merge') joined = idx.map(i => lines[i]).join(unescapeJoin($('sJoin').value));
+    after = lines.flatMap((l, i) => !hit.has(i) ? [l] : kind === 'merge' && i === idx[0] ? [joined] : []).join('\n');
+  }
+  const label = kind === 'merge' ? 'マージする' : '削除する';
+  resultsHead(!ok ? (idx.length ? 'マージは当たった行が2行以上のときだけできます' : '当たった行はありません')
+    : current.path + ' の ' + idx.length + ' 行を' + (kind === 'merge' ? '1行にマージします' : '削除します') + '（まだ変えていません）', planButton(label, ok));
+  if (ok) {
+    idx.slice(0, 20).forEach(i => sample(lines[i], kind === 'merge' && i === idx[0] ? '（ここにマージした1行が入ります）' : '（消えます）', i + 1));
+    if (idx.length > 20) { const d = document.createElement('div'); d.className = 'hint'; d.textContent = '…ほか ' + (idx.length - 20) + ' 行'; $('results').append(d); }
+    if (kind === 'merge') { const d = document.createElement('div'); d.className = 'file'; d.textContent = 'できあがる1行（' + (idx[0] + 1) + ' 行目）'; const y = document.createElement('div'); y.className = 'after'; y.textContent = joined.slice(0, 1000); $('results').append(d, y); }
+  }
+  plan = ok ? { path: current.path, before, after, count: idx.length, done: idx.length + (kind === 'merge' ? ' 行を1行にマージしました' : ' 行を削除しました') } : null;
 }
 function firstDiffLine(text, re) { re.lastIndex = 0; const m = re.exec(text); re.lastIndex = 0; return m ? text.slice(text.lastIndexOf('\n', m.index) + 1).split('\n')[0] : ''; }
 function sample(b, a, ln) {
@@ -874,7 +909,7 @@ function applyReplace() {
   if (mdMode) { refreshState(); return false; }
   // 見本のあとでファイルや中身が変わっていたら、置きかえない
   if (!plan || !current || current.path !== plan.path || ed.value !== plan.before) {
-    $('searchErr').textContent = '見本のあとで中身が変わりました。もう一度「置き換えの見本」を押してください。';
+    $('searchErr').textContent = '見本のあとで中身が変わりました。もう一度、見本のボタンを押してください。';
     const b = $('btnReplace'); if (b) b.disabled = true; plan = null; return false;
   }
   // 入力として置きかえるので、Ctrl+Z で戻せる。保存はマスターがする
@@ -883,9 +918,9 @@ function applyReplace() {
     ed.value = plan.after; ed.dispatchEvent(new Event('input'));   // insertText が使えないときは、戻せないが中身は同じにする
   }
   ed.setSelectionRange(0, 0); ed.scrollTop = 0;
-  const n = plan.count;
+  const done = plan.done;
   clearResults();
-  showMsg(n + ' か所を置き換えました（まだ保存していません。Ctrl+Z で戻せます）。', 'ok');
+  showMsg(done + '（まだ保存していません。Ctrl+Z で戻せます）。', 'ok');
   return true;
 }
 
@@ -994,13 +1029,15 @@ $('btnSave').onclick = save;
 $('btnMd').onclick = toggleMd;
 $('btnSearch').onclick = search;
 $('btnPreview').onclick = previewReplace;
+$('btnDelLines').onclick = () => previewLines('delete');
+$('btnMergeLines').onclick = () => previewLines('merge');
 $('sQuery').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); stepHit(e.shiftKey ? -1 : 1); } });
 $('btnNext').onclick = () => { if (!hits.length && !search()) return; goHit(hitPos + 1, true); };
 $('btnPrev').onclick = () => { if (!hits.length && !search()) return; goHit(hitPos < 0 ? hits.length - 1 : hitPos - 1, true); };
 $('btnFind').onclick = () => openFind(false);
 $('btnFindClose').onclick = closeFind;
 $('fQuery').addEventListener('input', fileSearchSoon);
-['sQuery', 'sRegex', 'sCase', 'sReplace'].forEach(id => $(id).addEventListener('input', () => { plan = null; const b = $('btnReplace'); if (b) b.disabled = true; if (id !== 'sReplace') { forgetHits(); $('hitInfo').textContent = ''; } }));
+['sQuery', 'sRegex', 'sCase', 'sReplace', 'sJoin'].forEach(id => $(id).addEventListener('input', () => { refreshState(); plan = null; const b = $('btnReplace'); if (b) b.disabled = true; if (id !== 'sReplace') { forgetHits(); $('hitInfo').textContent = ''; } }));
 $('btnNewFolder').onclick = () => { const n = prompt('新しいフォルダの名前'); if (n !== null) createEntry('dir', n); };
 $('btnNewNote').onclick = () => { const n = prompt('新しいノートの名前（.md が付きます）'); if (n !== null) createEntry('file', n); };  // 未保存の確かめは openNote でする
 $('editor').addEventListener('input', () => { setDirty($('editor').value !== savedText); forgetHits(); });   // 中身が変わったら、次の検索で探し直す
