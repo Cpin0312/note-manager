@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ノート管理</title>
+<style>
+  :root { --bg:#f3f3f3; --panel:#fff; --line:#d6d6d6; --text:#1f1f1f; --muted:#6b6b6b; --accent:#0f6cbd; --sel:#e0edf9; --err:#c42b1c; --ok:#107c10; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font-family: "Segoe UI", "Yu Gothic UI", "Meiryo", system-ui, sans-serif; font-size: 14px; color: var(--text); background: var(--bg); display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0 12px 0 0; font-weight: 600; }
+  button { font: inherit; padding: 5px 12px; border: 1px solid var(--line); border-radius: 4px; background: #fbfbfb; cursor: pointer; }
+  button:hover:not(:disabled) { background: #f0f0f0; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover:not(:disabled) { background: #115ea3; }
+  button:disabled { opacity: .5; cursor: default; }
+  #rootName { color: var(--muted); }
+  main { flex: 1; display: flex; min-height: 0; }
+  #side { width: 280px; min-width: 180px; background: var(--panel); border-right: 1px solid var(--line); overflow: auto; padding: 6px 0; }
+  #editorPane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #fileBar { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--panel); min-height: 38px; }
+  #fileName { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #dirtyMark { color: var(--err); font-weight: 600; }
+  #editor { flex: 1; width: 100%; border: 0; padding: 12px 16px; font: 15px/1.6 Consolas, "BIZ UDGothic", "MS Gothic", monospace; resize: none; outline: none; background: var(--panel); }
+  #editor:disabled { background: var(--bg); }
+  .item { display: flex; align-items: center; gap: 4px; padding: 3px 8px; cursor: pointer; white-space: nowrap; user-select: none; }
+  .item:hover { background: #f2f2f2; }
+  .item.selected { background: var(--sel); }
+  .item.binary { color: #a0a0a0; }
+  .twisty { width: 14px; display: inline-block; text-align: center; color: var(--muted); }
+  .children { padding-left: 14px; }
+  #msg { padding: 6px 12px; display: none; }
+  #msg.err { display: block; background: #fde7e9; color: var(--err); border-bottom: 1px solid #f1bbbc; }
+  #msg.ok { display: block; background: #dff6dd; color: var(--ok); border-bottom: 1px solid #9fd89f; }
+  #welcome { margin: auto; text-align: center; color: var(--muted); padding: 24px; line-height: 1.8; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ノート管理</h1>
+  <button id="btnPick" class="primary">フォルダ選択</button>
+  <button id="btnRestore" class="hidden">前回のフォルダを開く</button>
+  <span id="rootName"></span>
+  <span style="flex:1"></span>
+  <button id="btnNewFolder" disabled>新しいフォルダ</button>
+  <button id="btnNewNote" disabled>新しいノート</button>
+</header>
+<div id="msg"></div>
+<main>
+  <nav id="side"></nav>
+  <section id="editorPane">
+    <div id="fileBar">
+      <span id="fileName">ノートが選ばれていません</span>
+      <span id="dirtyMark" class="hidden" title="保存していない変更があります">● 未保存</span>
+      <span style="flex:1"></span>
+      <button id="btnSave" class="primary" disabled title="Ctrl+S">保存</button>
+    </div>
+    <div id="welcome">左の「フォルダ選択」で、ノートを置く親フォルダを選んでください。<br>次からは前回のフォルダが開きます。</div>
+    <textarea id="editor" class="hidden" spellcheck="false"></textarea>
+  </section>
+</main>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+let root = null;          // 親フォルダの handle
+let selectedDir = null;   // 新規作成先（木で選んだフォルダ）
+let current = null;       // { handle, path, crlf, bom }
+let savedText = '';
+let dirty = false;
+
+// ---------- 画面の知らせ ----------
+function showMsg(text, kind) {
+  const m = $('msg');
+  m.textContent = text;
+  m.className = kind;
+  if (kind === 'ok') setTimeout(() => { if (m.textContent === text) m.className = ''; }, 3000);
+}
+function errText(e) { return (e && (e.name ? e.name + ': ' : '') + (e.message || '')) || String(e); }
+
+// ---------- IndexedDB（フォルダの handle を覚える） ----------
+function idb() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open('note-manager', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('kv');
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function idbSet(key, val) {
+  const db = await idb();
+  return new Promise((res, rej) => {
+    const tx = db.transaction('kv', 'readwrite');
+    tx.objectStore('kv').put(val, key);
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
+  });
+}
+async function idbGet(key) {
+  const db = await idb();
+  return new Promise((res, rej) => {
+    const r = db.transaction('kv').objectStore('kv').get(key);
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+
+// ---------- 未保存の確かめ ----------
+function setDirty(d) {
+  dirty = d;
+  $('dirtyMark').classList.toggle('hidden', !d);
+  document.title = (d ? '● ' : '') + 'ノート管理';
+}
+function okToDiscard() {
+  return !dirty || confirm('保存していない変更があります。破棄してよろしいですか？');
+}
+window.addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+
+// ---------- フォルダを開く ----------
+async function openRoot(handle) {
+  root = handle;
+  selectedDir = { handle, path: '' };
+  current = null;
+  savedText = '';
+  setDirty(false);
+  $('editor').value = '';
+  $('editor').classList.add('hidden');
+  $('welcome').classList.remove('hidden');
+  $('welcome').textContent = '左の木からノートを選ぶか、「新しいノート」を作ってください。';
+  $('fileName').textContent = 'ノートが選ばれていません';
+  $('btnSave').disabled = true;
+  $('btnRestore').classList.add('hidden');
+  $('btnNewFolder').disabled = $('btnNewNote').disabled = false;
+  $('rootName').textContent = '📁 ' + handle.name;
+  await renderTree();
+}
+
+async function pickFolder() {
+  if (!okToDiscard()) return;
+  let h;
+  try {
+    h = await window.showDirectoryPicker({ id: 'note-manager', mode: 'readwrite' });
+  } catch (e) {
+    if (e.name !== 'AbortError') showMsg('フォルダを選べませんでした。' + errText(e), 'err');
+    return;
+  }
+  try { await idbSet('root', h); } catch (e) { showMsg('フォルダを覚えられませんでした（次回また選んでください）。' + errText(e), 'err'); }
+  await openRoot(h);
+}
+
+async function restore() {
+  const h = await idbGet('root').catch(() => null);
+  if (!h) return;
+  try {
+    if (await h.requestPermission({ mode: 'readwrite' }) === 'granted') return openRoot(h);
+    showMsg('フォルダの使用が許可されませんでした。もう一度押すか、フォルダを選び直してください。', 'err');
+  } catch (e) {
+    showMsg('前回のフォルダを開けませんでした（移動・削除された可能性があります）。フォルダを選び直してください。' + errText(e), 'err');
+    $('btnRestore').classList.add('hidden');
+  }
+}
+
+async function start() {
+  if (!('showDirectoryPicker' in window)) {
+    $('btnPick').disabled = true;
+    $('welcome').innerHTML = 'このブラウザでは使えません。<br><b>Microsoft Edge</b> または <b>Google Chrome</b>（パソコン版）で index.html を開いてください。<br>（Firefox・Safari は、フォルダを直接読み書きする機能に対応していません）';
+    return;
+  }
+  const h = await idbGet('root').catch(() => null);
+  if (!h) return;
+  let perm = 'prompt';
+  try { perm = await h.queryPermission({ mode: 'readwrite' }); } catch (e) {}
+  if (perm === 'granted') {
+    try { await h.values().next(); return await openRoot(h); } catch (e) { /* フォルダがない → 選び直し */ }
+  }
+  $('btnRestore').textContent = '前回のフォルダを開く（' + h.name + '）';
+  $('btnRestore').classList.remove('hidden');
+  $('welcome').textContent = '「前回のフォルダを開く」を押してください。別のフォルダにするときは「フォルダ選択」。';
+}
+
+// ---------- 文字のファイルか（拡張子でなく中身で見る） ----------
+const HEAD = 8192;
+// 先頭 8KB に NUL がなく、UTF-8 として読めれば文字のファイル
+function isTextHead(bytes) {
+  if (bytes.includes(0)) return false;
+  try { new TextDecoder('utf-8', { fatal: true }).decode(bytes, { stream: true }); return true; } catch (e) { return false; }
+}
+async function checkText(fileHandle) {
+  const f = await fileHandle.getFile();
+  return isTextHead(new Uint8Array(await f.slice(0, HEAD).arrayBuffer()));
+}
+
+// ---------- 木 ----------
+async function listDir(dir) {
+  const dirs = [], files = [];
+  for await (const [name, h] of dir.entries()) {
+    if (h.kind === 'directory') dirs.push(h);
+    else files.push(h);
+  }
+  const by = (a, b) => a.name.localeCompare(b.name, 'ja');
+  return [...dirs.sort(by), ...files.sort(by)];
+}
+
+const openPaths = new Set(['']);   // 開いているフォルダ（再描画で保つ）
+
+async function renderTree() {
+  const side = $('side');
+  side.innerHTML = '';
+  const rootEl = makeItem({ handle: root, path: '' }, 0);
+  side.appendChild(rootEl);
+  await rootEl.ready;
+}
+
+function makeItem(node, depth) {
+  const wrap = document.createElement('div');
+  const row = document.createElement('div');
+  row.className = 'item';
+  row.dataset.path = node.path;
+  const isDir = node.handle.kind === 'directory';
+  const tw = document.createElement('span');
+  tw.className = 'twisty';
+  row.appendChild(tw);
+  const label = document.createElement('span');
+  label.textContent = (isDir ? '📁 ' : '📄 ') + (node.path === '' ? node.handle.name : node.handle.name);
+  row.appendChild(label);
+  wrap.appendChild(row);
+  if (isDir) {
+    const kids = document.createElement('div');
+    kids.className = 'children';
+    wrap.appendChild(kids);
+    const load = async () => {
+      kids.innerHTML = '';
+      try {
+        const items = (await listDir(node.handle)).map(h => makeItem({ handle: h, path: node.path ? node.path + '/' + h.name : h.name, parent: node }, depth + 1));
+        items.forEach(el => kids.appendChild(el));
+        await Promise.all(items.map(el => el.ready));
+      } catch (e) { showMsg('フォルダを読めませんでした：' + node.path + ' ' + errText(e), 'err'); }
+    };
+    const setOpen = async open => {
+      tw.textContent = open ? '▾' : '▸';
+      if (open) { openPaths.add(node.path); await load(); } else { openPaths.delete(node.path); kids.innerHTML = ''; }
+    };
+    node.reload = load;
+    row.onclick = async () => {
+      selectDir(node, row);
+      await setOpen(!openPaths.has(node.path) || node.path === '' ? true : false);
+    };
+    wrap.ready = setOpen(openPaths.has(node.path));
+    if (selectedDir && selectedDir.path === node.path) { selectedDir = node; row.classList.add('selected'); }
+  } else {
+    row.onclick = () => openNote(node, row);
+    checkText(node.handle).then(ok => { if (!ok) { row.classList.add('binary'); row.title = '文字のファイルではないので開けません'; } }).catch(() => {});
+    if (current && current.path === node.path) row.classList.add('selected');
+  }
+  return wrap;
+}
+
+function markSelected(row) {
+  document.querySelectorAll('.item.selected').forEach(r => r.classList.remove('selected'));
+  row.classList.add('selected');
+}
+function selectDir(node, row) { selectedDir = node; markSelected(row); }
+
+// ---------- ノート ----------
+async function openNote(node, row) {
+  if (current && current.path === node.path) return;
+  if (!okToDiscard()) return;
+  let text;
+  try {
+    const bytes = new Uint8Array(await (await node.handle.getFile()).arrayBuffer());
+    // 画像・docx・Shift_JIS などは、UTF-8 で保存すると壊れるので開かない
+    if (bytes.includes(0)) throw new TypeError();
+    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch (e) {
+    showMsg(e instanceof TypeError ? '「' + node.path + '」は文字のファイルではないので開けません（UTF-8 の文字のファイルだけ開けます）。' : '開けませんでした：' + errText(e), 'err');
+    return;
+  }
+  current = node;
+  node.bom = text.startsWith('\uFEFF');
+  if (node.bom) text = text.slice(1);
+  // 改行の形を元のまま保つ（CRLF が LF 以上なら CRLF で保存）
+  const crlfCount = (text.match(/\r\n/g) || []).length;
+  node.crlf = crlfCount > 0 && crlfCount >= (text.match(/\n/g) || []).length - crlfCount;
+  savedText = text.replace(/\r\n?/g, '\n');
+  const ed = $('editor');
+  ed.value = savedText;
+  ed.classList.remove('hidden');
+  $('welcome').classList.add('hidden');
+  $('fileName').textContent = node.path;
+  $('btnSave').disabled = false;
+  setDirty(false);
+  selectedDir = node.parent || selectedDir;
+  markSelected(row);
+  ed.focus();
+}
+
+async function save() {
+  if (!current) return;
+  const text = $('editor').value;
+  try {
+    if (await current.handle.queryPermission({ mode: 'readwrite' }) !== 'granted' &&
+        await current.handle.requestPermission({ mode: 'readwrite' }) !== 'granted') throw new Error('書き込みが許可されていません');
+    const w = await current.handle.createWritable();
+    const out = (current.bom ? '\uFEFF' : '') + (current.crlf ? text.replace(/\n/g, '\r\n') : text);
+    try { await w.write(out); await w.close(); }
+    catch (e) { try { await w.abort(); } catch (_) {} throw e; }
+  } catch (e) {
+    showMsg('保存に失敗しました。変更はまだ画面に残っています。' + errText(e), 'err');
+    return false;
+  }
+  savedText = text;
+  setDirty($('editor').value !== savedText);
+  showMsg('保存しました：' + current.path, 'ok');
+  return true;
+}
+
+// Windows で使えない名前を断る
+function badName(name) {
+  if (!name) return '名前が空です。';
+  if (/[\\/:*?"<>|]/.test(name)) return '名前に \\ / : * ? " < > | は使えません。';
+  if (/[. ]$/.test(name)) return '名前の最後に「.」や空白は使えません。';
+  if (/^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/i.test(name)) return 'その名前は Windows で使えません。';
+  return null;
+}
+async function exists(dir, name) {
+  for (const get of ['getFileHandle', 'getDirectoryHandle']) {
+    try { await dir[get](name); return true; } catch (e) { if (e.name !== 'NotFoundError' && e.name !== 'TypeMismatchError') throw e; }
+  }
+  return false;
+}
+
+async function createEntry(kind, name) {
+  name = (name || '').trim();
+  if (kind === 'file' && !/\.md$/i.test(name)) name += '.md';
+  const bad = badName(name);
+  if (bad) { showMsg(bad, 'err'); return null; }
+  const dir = selectedDir || { handle: root, path: '' };
+  try {
+    if (await exists(dir.handle, name)) { showMsg('「' + name + '」はもうあります。別の名前にしてください。', 'err'); return null; }
+    const h = kind === 'file' ? await dir.handle.getFileHandle(name, { create: true }) : await dir.handle.getDirectoryHandle(name, { create: true });
+    const path = dir.path ? dir.path + '/' + name : name;
+    openPaths.add(dir.path);
+    if (kind === 'dir') { selectedDir = { handle: h, path }; openPaths.add(path); }
+    await renderTree();
+    showMsg((kind === 'file' ? 'ノート' : 'フォルダ') + 'を作りました：' + path, 'ok');
+    if (kind === 'file') {
+      const row = document.querySelector('.item[data-path="' + CSS.escape(path) + '"]');
+      if (row) row.click();
+    }
+    return path;
+  } catch (e) {
+    showMsg('作れませんでした：' + errText(e), 'err');
+    return null;
+  }
+}
+
+// ---------- 操作 ----------
+$('btnPick').onclick = pickFolder;
+$('btnRestore').onclick = restore;
+$('btnSave').onclick = save;
+$('btnNewFolder').onclick = () => { const n = prompt('新しいフォルダの名前'); if (n !== null) createEntry('dir', n); };
+$('btnNewNote').onclick = () => { const n = prompt('新しいノートの名前（.md が付きます）'); if (n !== null) createEntry('file', n); };  // 未保存の確かめは openNote でする
+$('editor').addEventListener('input', () => setDirty($('editor').value !== savedText));
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(); }
+});
+start();
+</script>
+</body>
+</html>
