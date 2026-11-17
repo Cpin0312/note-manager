@@ -8,8 +8,8 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const srv = spawn('python3', ['-m', 'http.server', '8765', '--bind', '127.0.0.1', '-d', ROOT], { stdio: 'ignore' });
 await sleep(800);
 const c = await launch({ profile: mkdtempSync(tmpdir() + '/nm-test-'), port: 9336 });
-let promptText = '', dialogs = [];
-c.on(m => { if (m.method === 'Page.javascriptDialogOpening') { dialogs.push(m.params.type); c.send('Page.handleJavaScriptDialog', { accept: m.params.type !== 'beforeunload', promptText }); } });
+let promptText = '', dialogs = [], lastDialog = '', confirmAnswer = true;
+c.on(m => { if (m.method === 'Page.javascriptDialogOpening') { dialogs.push(m.params.type); lastDialog = m.params.message; c.send('Page.handleJavaScriptDialog', { accept: m.params.type === 'confirm' ? confirmAnswer : m.params.type !== 'beforeunload', promptText }); } });
 await c.send('Page.enable');
 const PAGE = 'http://127.0.0.1:8765/index.html';
 await c.send('Page.navigate', { url: PAGE }); await sleep(1000);
@@ -18,6 +18,12 @@ const ok = (name, cond, extra = '') => { console.log((cond ? 'OK  ' : 'NG  ') + 
 const msg = () => J(`document.getElementById('msg').className + ':' + document.getElementById('msg').textContent`);
 const click = async sel => { const r = await J(`(()=>{const b=document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect();return [b.x+b.width/2,b.y+b.height/2]})()`);
   for (const type of ['mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, x: r[0], y: r[1], button: 'left', clickCount: 1 }); await sleep(400); };
+const rclick = async sel => { const r = await J(`(()=>{const b=document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect();return [b.x+b.width/2,b.y+b.height/2]})()`);
+  for (const type of ['mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, x: r[0], y: r[1], button: 'right', clickCount: 1 }); await sleep(300); };
+const setVal = (id, v) => J(`(()=>{const e=document.getElementById('${id}'); if (e.type==='checkbox') e.checked=${JSON.stringify(v)}; else e.value=${JSON.stringify(v)}; e.dispatchEvent(new Event('input')); return 1})()`);
+const hits = () => J(`[...document.querySelectorAll('#results .hit')].map(e=>e.textContent)`);
+const head = () => J(`document.querySelector('#results .head span') ? document.querySelector('#results .head span').textContent : ''`);
+const exists = p => J(`(async()=>{let d=await navigator.storage.getDirectory();const ps=${JSON.stringify(p)}.split('/');try{for(const x of ps.slice(0,-1))d=await d.getDirectoryHandle(x);for(const g of ['getFileHandle','getDirectoryHandle']){try{await d[g](ps.at(-1));return true}catch(e){}}return false}catch(e){return false}})()`);
 const readOpfs = p => J(`(async()=>{let d=await navigator.storage.getDirectory();const ps=${JSON.stringify(p)}.split('/');for(const x of ps.slice(0,-1))d=await d.getDirectoryHandle(x);const b=new Uint8Array(await (await (await d.getFileHandle(ps.at(-1))).getFile()).arrayBuffer());return [...b].join(',')})()`);
 const bytes = s => [...Buffer.from(s, 'utf8')].join(',');
 
@@ -75,6 +81,7 @@ ok('拡張子に関係なく文字なら開く', (await J(`document.getElementBy
 await c.send('Input.insertText', { text: 'X' });
 await J(`current.handle.createWritable = async () => { throw new DOMException('disk full', 'QuotaExceededError') }; save()`); await sleep(300);
 ok('保存失敗を表示・印は残る', (await msg()).startsWith('err:保存に失敗') && !(await J(`document.getElementById('dirtyMark').classList.contains('hidden')`)), await msg());
+await J(`delete current.handle.createWritable; 1`);   // 試しの壊しを戻す
 // 未保存で別のノート → 確かめ
 dialogs = [];
 await click('.item[data-path="crlf.txt"]');
@@ -84,7 +91,68 @@ await J(`document.getElementById('editor').focus()`); await c.send('Input.insert
 ok('離れるときに警告（beforeunload を止める）', await J(`(()=>{const e=new Event('beforeunload',{cancelable:true});dispatchEvent(e);return e.defaultPrevented})()`));
 // 警告を断ったので、まだ同じページ。印を消して再読み込み
 await J(`setDirty(false)`);
+
+// ===== ファイル検索 =====
+await setVal('sMode', 'name'); await setVal('sQuery', '今日'); await click('#btnSearch'); await sleep(400);
+ok('ファイル名で下のフォルダまで探す', JSON.stringify(await hits()) === JSON.stringify(['メモ/今日.md']), JSON.stringify(await hits()));
+await click('#results .hit'); await sleep(400);
+ok('結果を押すと開く', (await J(`document.getElementById('fileName').textContent`)) === 'メモ/今日.md');
+// ===== 文字検索 =====
+await setVal('sMode', 'text'); await setVal('sQuery', 'こんにちは'); await click('#btnSearch'); await sleep(400);
+ok('文字検索：ファイル名・行番号・行', JSON.stringify(await hits()) === JSON.stringify(['2 メモ/今日.md : こんにちは']), JSON.stringify(await hits()));
+await click('.item[data-path="crlf.txt"]'); await sleep(300);
+await click('#results .hit'); await sleep(400);
+ok('押すとその行を開く', (await J(`(()=>{const e=document.getElementById('editor');return document.getElementById('fileName').textContent+'|'+e.value.slice(e.selectionStart,e.selectionEnd)})()`)) === 'メモ/今日.md|こんにちは');
+ok('文字検索は文字でないファイルを飛ばす', !(await hits()).some(h => h.includes('bin.png')));
+// 大文字小文字
+await setVal('sQuery', 'LET'); await setVal('sCase', true); await click('#btnSearch'); await sleep(400);
+const caseOn = (await hits()).length;
+await setVal('sCase', false); await click('#btnSearch'); await sleep(400);
+ok('大文字小文字を区別の切りかえ', caseOn === 0 && (await hits()).length === 1, caseOn + ' / ' + (await hits()).length);
+// 正規表現
+await setVal('sRegex', true); await setVal('sQuery', '^le.\\s'); await click('#btnSearch'); await sleep(400);
+ok('正規表現で探す', JSON.stringify(await hits()) === JSON.stringify(['1 script.js : let x = 1;']), JSON.stringify(await hits()));
+await setVal('sQuery', '('); await click('#btnSearch'); await sleep(200);
+ok('まちがった正規表現は赤で知らせる', (await J(`document.getElementById('sQuery').classList.contains('bad')`)) && (await J(`document.getElementById('searchErr').textContent`)).includes('正規表現がまちがっています'), await J(`document.getElementById('searchErr').textContent`));
+// ===== 置き換え（全部のファイル）=====
+await setVal('sRegex', false); await setVal('sCase', true); await setVal('sQuery', 'b'); await setVal('sReplace', 'B$1'); await setVal('sScope', 'all');
+await click('#btnPreview'); await sleep(500);
+ok('見本：件数', (await head()).startsWith('2 個のファイルで 2 か所'), await head());
+ok('見本：前→後', (await J(`[...document.querySelectorAll('#results .before,#results .after')].map(e=>e.textContent).join('|')`)).includes('2: b|2: B$1'), await J(`[...document.querySelectorAll('#results .before,#results .after')].map(e=>e.textContent).join('|')`));
+ok('見本ではまだ書かない', (await readOpfs('crlf.txt')) === '97,13,10,98,13,10,99,13,10');
+await click('#btnReplace'); await sleep(500);
+ok('置き換えたファイルの数', (await msg()) === 'ok:2 個のファイルを置き換えました。', await msg());
+ok('CRLF を保って置き換え（ふつうの検索は $1 をそのまま）', (await readOpfs('crlf.txt')) === bytes('a\r\nB$1\r\nc\r\n'), await readOpfs('crlf.txt'));
+ok('BOM を保って置き換え', (await readOpfs('bom.md')) === '239,187,191,' + bytes('a\nB$1'), await readOpfs('bom.md'));
+ok('文字でないファイルは変えない', (await readOpfs('bin.png')) === '137,80,78,71,0,0,1');
+// ===== 置き換え（今のファイル・正規表現のグループ）=====
+await click('.item[data-path="script.js"]'); await sleep(300);
+await setVal('sRegex', true); await setVal('sQuery', '(\\d)'); await setVal('sReplace', '[$1]'); await setVal('sScope', 'current');
+await click('#btnPreview'); await sleep(400);
+ok('今のファイルだけの見本', (await head()).startsWith('1 個のファイルで 1 か所'), await head());
+await click('#btnReplace'); await sleep(400);
+ok('正規表現の $1 で置き換え・画面も新しく', (await readOpfs('script.js')) === bytes('let x = [1];\n') && (await J(`document.getElementById('editor').value`)) === 'let x = [1];\n', await readOpfs('script.js'));
+// 未保存があるときは置き換えない
+await J(`document.getElementById('editor').focus()`); await c.send('Input.insertText', { text: 'Z' });
+await click('#btnPreview'); await sleep(300);
+ok('未保存があるときは置き換えない', (await J(`document.getElementById('searchErr').textContent`)).includes('先に保存'));
+// ===== 右クリックで削除 =====
+await rclick('.item[data-path="bin.png"]');
+ok('右クリックで「削除」が出る', !(await J(`document.getElementById('ctxMenu').classList.contains('hidden')`)));
+confirmAnswer = false; await click('#ctxDelete'); await sleep(300); confirmAnswer = true;
+ok('確かめで「いいえ」なら消さない', (await exists('bin.png')) && lastDialog.includes('元に戻せません'), lastDialog);
+await rclick('.item[data-path="メモ"]'); await click('#ctxDelete'); await sleep(500);
+ok('フォルダの確かめに中のファイル数', lastDialog.includes('「メモ」') && lastDialog.includes('ファイル 1 個') && lastDialog.includes('元に戻せません'), lastDialog);
+ok('フォルダを中身ごと消す', !(await exists('メモ')) && !(await J(`!!document.querySelector('.item[data-path="メモ"]')`)));
+// 編集中で未保存のファイルを消す（script.js は 'Z' が未保存）
+await rclick('.item[data-path="script.js"]'); await click('#ctxDelete'); await sleep(400);
+ok('未保存の変更を先に知らせる', lastDialog.startsWith('開いているノート「script.js」に、保存していない変更'), lastDialog);
+ok('開いていたファイルを消すと編集を閉じる', !(await exists('script.js')) && (await J(`document.getElementById('editor').classList.contains('hidden') && !dirty`)));
+// 削除の失敗を画面に出す
+await J(`root.removeEntry = async () => { throw new DOMException('locked', 'NoModificationAllowedError') }; 1`);
+await rclick('.item[data-path="bin.png"]'); await click('#ctxDelete'); await sleep(400);
+ok('削除の失敗を画面に出す', (await msg()).startsWith('err:削除に失敗しました：bin.png') && (await exists('bin.png')), await msg());
 await c.send('Page.reload'); await sleep(1500);
-ok('再読み込みで前回のフォルダが開く', (await J(`document.getElementById('rootName').textContent`)).length > 0 && (await J(`!!document.querySelector('.item[data-path="メモ"]')`)), await J(`document.getElementById('rootName').textContent`));
+ok('再読み込みで前回のフォルダが開く', (await J(`document.getElementById('rootName').textContent`)).length > 0 && (await J(`!!document.querySelector('.item[data-path="crlf.txt"]')`)), await J(`document.getElementById('rootName').textContent`));
 console.log(fails ? `NG ${fails} 件` : 'ALL OK');
 c.close(); srv.kill(); process.exit(fails ? 1 : 0);
