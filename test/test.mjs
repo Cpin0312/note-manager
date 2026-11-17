@@ -120,7 +120,7 @@ ok('Ctrl+F で窓が開き、探す欄に入る', await J(`!document.getElementB
 await key('Escape', 'Escape', 27, 0);
 ok('Esc で閉じる', await J(`document.getElementById('findDlg').classList.contains('hidden')`));
 await key('h', 'KeyH', 72);
-ok('Ctrl+H で窓が開き、置き換える欄に入る', await J(`!document.getElementById('findDlg').classList.contains('hidden') && document.activeElement.id === 'sReplace'`));
+ok('Ctrl+H で窓が開き、置き換える欄に入る（操作も置き換え）', await J(`!document.getElementById('findDlg').classList.contains('hidden') && document.activeElement.id === 'sReplace' && document.getElementById('sOp').value === 'replace'`));
 await click('#btnFindClose');
 ok('× で閉じる', await J(`document.getElementById('findDlg').classList.contains('hidden')`));
 await click('#btnFind');
@@ -135,9 +135,9 @@ ok('タイトルをドラッグで動かせる', Math.round(t1[0] - t0[0]) === -
 // 窓は左の一覧にかぶらない所へ戻しておく
 await J(`(()=>{const d=document.getElementById('findDlg');d.style.left='330px';d.style.top='60px';d.style.width='460px';return 1})()`);
 const sel = () => J(`(()=>{const e=document.getElementById('editor');return e.value.slice(e.selectionStart,e.selectionEnd)+'@'+e.selectionStart})()`);
-await setVal('sQuery', 'こんにちは'); await click('#btnSearch'); await sleep(300);
+await setVal('sQuery', 'こんにちは'); await J(`search(); 1`); await sleep(300);
 ok('文字検索は今のファイルだけ：行番号と行', JSON.stringify(await hits()) === JSON.stringify(['2 こんにちは']) && (await head()).startsWith('メモ/今日.md に 1 か所'), JSON.stringify(await hits()) + (await head()));
-await setVal('sQuery', 'let'); await click('#btnSearch'); await sleep(300);
+await setVal('sQuery', 'let'); await J(`search(); 1`); await sleep(300);
 ok('ほかのファイルは探さない', (await hits()).length === 0 && (await head()) === '見つかりませんでした', await head());
 await click('.item[data-path="crlf.txt"]'); await sleep(300);
 await setVal('sRegex', true); await setVal('sQuery', '[abc]');
@@ -154,56 +154,46 @@ ok('結果を押しても窓は閉じない', await J(`!document.getElementById(
 // 未保存の変更も探す
 await J(`(()=>{const e=document.getElementById('editor');e.focus();e.setSelectionRange(e.value.length,e.value.length);return 1})()`);
 await c.send('Input.insertText', { text: 'zzz' });
-await setVal('sRegex', false); await setVal('sQuery', 'zzz'); await click('#btnSearch'); await sleep(200);
+await setVal('sRegex', false); await setVal('sQuery', 'zzz'); await J(`search(); 1`); await sleep(200);
 ok('未保存の変更も含めて探す', JSON.stringify(await hits()) === JSON.stringify(['4 zzz']), JSON.stringify(await hits()));
 await J(`(()=>{const e=document.getElementById('editor');e.value=savedText;e.dispatchEvent(new Event('input'));return 1})()`);
 // 大文字小文字
-await setVal('sQuery', 'A'); await setVal('sCase', true); await click('#btnSearch'); await sleep(200);
+await setVal('sQuery', 'A'); await setVal('sCase', true); await J(`search(); 1`); await sleep(200);
 const caseOn = (await hits()).length;
-await setVal('sCase', false); await click('#btnSearch'); await sleep(200);
+await setVal('sCase', false); await J(`search(); 1`); await sleep(200);
 ok('大文字小文字を区別の切りかえ', caseOn === 0 && (await hits()).length === 1, caseOn + ' / ' + (await hits()).length);
 // 正規表現
-await setVal('sRegex', true); await setVal('sQuery', '^[a-c]$'); await click('#btnSearch'); await sleep(200);
+await setVal('sRegex', true); await setVal('sQuery', '^[a-c]$'); await J(`search(); 1`); await sleep(200);
 ok('正規表現で探す', (await hits()).length === 3, JSON.stringify(await hits()));
-await setVal('sQuery', '('); await click('#btnSearch'); await sleep(200);
+await setVal('sQuery', '('); await J(`search(); 1`); await sleep(200);
 ok('まちがった正規表現は赤で知らせる', (await J(`document.getElementById('sQuery').classList.contains('bad')`)) && (await J(`document.getElementById('searchErr').textContent`)).includes('正規表現がまちがっています'), await J(`document.getElementById('searchErr').textContent`));
-// ===== 置き換え（今開いているファイルだけ・編集画面の中身を置きかえる）=====
+// ===== 窓の操作：置き換え（今のファイルだけ・押したらすぐ・編集画面だけ）=====
 const edv = () => J(`document.getElementById('editor').value`);
 const isDirty = () => J(`!document.getElementById('dirtyMark').classList.contains('hidden')`);
 const saveKey = async () => { for (const type of ['rawKeyDown', 'keyUp']) await c.send('Input.dispatchKeyEvent', { type, key: 's', code: 'KeyS', windowsVirtualKeyCode: 83, modifiers: 2 }); await sleep(400); };
-ok('範囲の選びはない', await J(`!document.getElementById('sScope')`));
+const typeEnd = async t => { await J(`(()=>{const e=document.getElementById('editor');e.focus();e.setSelectionRange(e.value.length,e.value.length);return 1})()`); await c.send('Input.insertText', { text: t }); };
+const noteText = () => J(`document.getElementById('searchErr').textContent`);
+const run = async op => { await setVal('sOp', op); await click('#btnRun'); await sleep(250); };
+ok('窓のボタンは少なく（↑ ↓ 実行 だけ）', await J(`[...document.querySelectorAll('#findBody button')].map(b=>b.textContent).join(' ') === '↑ ↓ 実行' && document.getElementById('sOp').options.length === 5`));
 await click('.item[data-path="crlf.txt"]'); await sleep(300);
 await setVal('sRegex', false); await setVal('sCase', true); await setVal('sQuery', 'b'); await setVal('sReplace', 'B$1');
-await click('#btnPreview'); await sleep(300);
-ok('見本：今のファイルの件数', (await head()).startsWith('crlf.txt の 1 か所'), await head());
-ok('見本：前→後', (await J(`[...document.querySelectorAll('#results .before,#results .after')].map(e=>e.textContent).join('|')`)) === '2: b|2: B$1', await J(`[...document.querySelectorAll('#results .before,#results .after')].map(e=>e.textContent).join('|')`));
-ok('見本ではまだ変えない', (await edv()) === 'a\nb\nc\n' && !(await isDirty()));
-await click('#btnReplace'); await sleep(300);
-ok('編集画面だけ置きかえ（ふつうの検索は $1 をそのまま）', (await edv()) === 'a\nB$1\nc\n', JSON.stringify(await edv()));
+dialogs = []; await run('replace');
+ok('押したらすぐ置き換え（確かめも見本もなし。ふつうの検索は $1 をそのまま）', (await edv()) === 'a\nB$1\nc\n' && dialogs.length === 0 && (await J(`document.getElementById('results').classList.contains('hidden')`)), JSON.stringify(await edv()));
+ok('結果を1行で出す', (await noteText()).startsWith('1 行を置き換えました'), await noteText());
 ok('未保存の印が付き、ディスクはまだ元のまま', (await isDirty()) && (await readOpfs('crlf.txt')) === '97,13,10,98,13,10,99,13,10');
-ok('置き換えた数を出す', (await msg()).startsWith('ok:1 か所を置き換えました'), await msg());
 await J(`document.execCommand('undo'); 1`); await sleep(200);
 ok('Ctrl+Z（元に戻す）で戻せる', (await edv()) === 'a\nb\nc\n' && !(await isDirty()), JSON.stringify(await edv()));
-await click('#btnPreview'); await sleep(300); await click('#btnReplace'); await sleep(300);
-await saveKey();
+await run('replace'); await saveKey();
 ok('保存すると CRLF のまま書く', (await readOpfs('crlf.txt')) === bytes('a\r\nB$1\r\nc\r\n'), await readOpfs('crlf.txt'));
 await click('.item[data-path="bom.md"]'); await sleep(300);
-await click('#btnPreview'); await sleep(300); await click('#btnReplace'); await sleep(300); await saveKey();
+await run('replace'); await saveKey();
 ok('保存すると BOM のまま書く', (await readOpfs('bom.md')) === '239,187,191,' + bytes('a\nB$1'), await readOpfs('bom.md'));
-// 正規表現のグループ
 await click('.item[data-path="script.js"]'); await sleep(300);
-await setVal('sRegex', true); await setVal('sQuery', '(\\d)'); await setVal('sReplace', '[$1]');
-await click('#btnPreview'); await sleep(300);
-ok('正規表現の見本', (await head()).startsWith('script.js の 1 か所'), await head());
-await click('#btnReplace'); await sleep(300);
+await setVal('sRegex', true); await setVal('sQuery', '(\\d)'); await setVal('sReplace', '[$1]'); await run('replace');
 ok('正規表現の $1 で置き換え', (await edv()) === 'let x = [1];\n', JSON.stringify(await edv()));
 await saveKey();
 ok('保存で書ける', (await readOpfs('script.js')) === bytes('let x = [1];\n'));
-// 見本のあとで中身が変わったら置きかえない
-await setVal('sQuery', '(\\[)'); await setVal('sReplace', '<'); await click('#btnPreview'); await sleep(300);
-await J(`document.getElementById('editor').focus()`); await c.send('Input.insertText', { text: 'Z' });
-await click('#btnReplace'); await sleep(300);
-ok('見本のあとで変わったら置きかえない', (await J(`document.getElementById('searchErr').textContent`)).includes('見本のあとで') && (await edv()).includes('['), await J(`document.getElementById('searchErr').textContent`));
+await typeEnd('Z');   // あとの削除の確かめのため、未保存にしておく
 // ===== 右クリックで削除 =====
 await rclick('.item[data-path="bin.png"]');
 ok('右クリックで「削除」が出る', !(await J(`document.getElementById('ctxMenu').classList.contains('hidden')`)));
@@ -215,10 +205,9 @@ ok('フォルダを中身ごと消す', !(await exists('メモ')) && !(await J(`
 // 編集中で未保存のファイルを消す（script.js は 'Z' が未保存）
 await rclick('.item[data-path="script.js"]'); await click('#ctxDelete'); await sleep(400);
 ok('未保存の変更を先に知らせる', lastDialog.startsWith('開いているノート「script.js」に、保存していない変更'), lastDialog);
-await J(`openFind(false); 1`); await setVal('sQuery', 'a'); await click('#btnSearch'); await sleep(200);
+await J(`openFind(false); 1`); await setVal('sQuery', 'a'); await J(`search(); 1`); await sleep(200);
 ok('ファイルを開いていないときは検索も「ファイルを開いてから」', (await head()).includes('ファイルを開いてから'), await head());
-ok('ファイルを開いていないときは行のボタンも押せない', await J(`document.getElementById('btnDelLines').disabled && document.getElementById('btnMergeLines').disabled`));
-ok('ファイルを開いていないときは置き換えを押せない', await J(`document.getElementById('btnPreview').disabled && document.getElementById('replaceHint').textContent.includes('ファイルを開いてから')`));
+ok('ファイルを開いていないときは実行できない', await J(`document.getElementById('btnRun').disabled && document.getElementById('searchErr').textContent.includes('ファイルを開いてから')`));
 ok('開いていたファイルを消すと編集を閉じる', !(await exists('script.js')) && (await J(`document.getElementById('editor').classList.contains('hidden') && !dirty`)));
 // 削除の失敗を画面に出す
 await J(`root.removeEntry = async () => { throw new DOMException('locked', 'NoModificationAllowedError') }; 1`);
@@ -271,7 +260,7 @@ ok('javascript: のリンクは無効', (await mv('a')) === 1 && !(await J(`[...
 ok('生の HTML は動かさず文字で見せる', (await mv('script')) === 0 && (await mv('img')) === 0 && !(await J(`[...document.querySelectorAll('#mdView *')].some(e=>[...e.attributes].some(a=>/^on/i.test(a.name)))`)) && (await J(`document.getElementById('mdView').textContent.includes('<script>')`)) && (await J(`window.__pwned === undefined`)));
 ok('未保存の変更も含めて表示', (await J(`document.getElementById('mdView').textContent.includes('未保存の行')`)) && (await isDirty()));
 await J(`openFind(true); 1`);
-ok('表示中は置き換えできない', await J(`document.getElementById('btnPreview').disabled && document.getElementById('replaceHint').textContent.includes('MD表示中')`));
+ok('表示中は実行できない', await J(`document.getElementById('btnRun').disabled && document.getElementById('searchErr').textContent.includes('MD表示中')`));
 await setVal('sRegex', false); await setVal('sQuery', '太字'); await enter();
 ok('MD表示中も検索でき、当たった所に印', (await J(`document.querySelectorAll('#mdView mark').length`)) === 1 && (await J(`document.querySelectorAll('#mdView mark.cur').length`)) === 1 && (await J(`document.getElementById('hitInfo').textContent`)) === '1 / 1');
 await J(`closeFind(); 1`);
@@ -280,45 +269,44 @@ ok('表示中も保存できる（未保存の変更を書く）', !(await isDir
 await click('.item[data-path="crlf.txt"]'); await sleep(300);
 ok('ファイルを切りかえても MD表示のまま', (await J(`!document.getElementById('mdView').classList.contains('hidden') && document.getElementById('editor').classList.contains('hidden') && document.getElementById('mdView').textContent.includes('B$1')`)));
 await click('#btnMd'); await sleep(200);
-ok('「編集に戻る」で編集画面に戻る', (await J(`!document.getElementById('editor').classList.contains('hidden') && document.getElementById('mdView').classList.contains('hidden') && document.getElementById('btnMd').textContent === 'MD表示' && !document.getElementById('btnPreview').disabled`)));
-// ===== 当たった行の削除・マージ =====
-const typeEnd = async t => { await J(`(()=>{const e=document.getElementById('editor');e.focus();e.setSelectionRange(e.value.length,e.value.length);return 1})()`); await c.send('Input.insertText', { text: t }); };
-await J(`(async()=>{const r=await navigator.storage.getDirectory();const w=await (await r.getFileHandle('lines.txt',{create:true})).createWritable();await w.write('apple 1\\r\\nbanana\\r\\nApple 2\\r\\ncherry\\r\\napple 3\\r\\n');await w.close();await renderTree();return 1})()`);
+ok('「編集に戻る」で編集画面に戻る', (await J(`!document.getElementById('editor').classList.contains('hidden') && document.getElementById('mdView').classList.contains('hidden') && document.getElementById('btnMd').textContent === 'MD表示' && !document.getElementById('btnRun').disabled`)));
+// ===== 窓の操作：当たった行の削除・行マージ・Ltrim・Rtrim =====
+const L = ['apple', 'apple', 'banana', 'banana', 'apple', '　 \tcherry 　', '  Apple x　'];
+await J(`(async()=>{const r=await navigator.storage.getDirectory();const w=await (await r.getFileHandle('lines.txt',{create:true})).createWritable();await w.write(${JSON.stringify(L.join('\r\n') + '\r\n')});await w.close();await renderTree();return 1})()`);
 await click('.item[data-path="lines.txt"]'); await sleep(300);
 await J(`openFind(false); 1`);
-await setVal('sReplace', ''); await setVal('sJoin', ''); await setVal('sRegex', false); await setVal('sCase', false); await setVal('sQuery', '');
-ok('探す文字が空なら行のボタンは押せない', await J(`document.getElementById('btnDelLines').disabled && document.getElementById('btnMergeLines').disabled`));
-await setVal('sQuery', 'apple');
-ok('探す文字を入れると押せる', await J(`!document.getElementById('btnDelLines').disabled && !document.getElementById('btnMergeLines').disabled`));
-await click('#btnDelLines'); await sleep(200);
-const samples = () => J(`[...document.querySelectorAll('#results .before,#results .after')].map(e=>e.textContent).join('|')`);
-ok('削除の見本：件数と消える行（大文字小文字を区別しない）', (await head()).startsWith('lines.txt の 3 行を削除します') && (await samples()) === '1: apple 1|1: （消えます）|3: Apple 2|3: （消えます）|5: apple 3|5: （消えます）', (await head()) + ' ' + await samples());
-ok('見本ではまだ変えない', (await edv()) === 'apple 1\nbanana\nApple 2\ncherry\napple 3\n' && !(await isDirty()));
-await click('#btnReplace'); await sleep(200);
-ok('当たった行を削除（編集画面だけ・未保存の印）', (await edv()) === 'banana\ncherry\n' && (await isDirty()) && (await msg()).startsWith('ok:3 行を削除しました'), JSON.stringify(await edv()));
-await J(`document.execCommand('undo'); 1`); await sleep(200);
-ok('元に戻せる', (await edv()) === 'apple 1\nbanana\nApple 2\ncherry\napple 3\n' && !(await isDirty()));
-await setVal('sCase', true); await setVal('sJoin', '\\t'); await click('#btnMergeLines'); await sleep(200);
-ok('マージの見本：件数とできあがる1行（大文字小文字を区別）', (await head()).startsWith('lines.txt の 2 行を1行にマージします') && (await J(`document.querySelector('#results .after:last-child').textContent`)) === 'apple 1\tapple 3', await head());
-await click('#btnReplace'); await sleep(200);
-ok('マージ：最初の行の位置に1行、ほかは消える（\\t でつなぐ）', (await edv()) === 'apple 1\tapple 3\nbanana\nApple 2\ncherry\n' && (await msg()).startsWith('ok:2 行を1行にマージしました'), JSON.stringify(await edv()));
+const orig = L.join('\n') + '\n';
+const undo = async () => { await J(`document.execCommand('undo'); 1`); await sleep(150); };
+await setVal('sReplace', ''); await setVal('sRegex', false); await setVal('sCase', false); await setVal('sQuery', '');
+await setVal('sOp', 'replace');
+ok('置き換えは探す文字が要る（押せず、理由は1か所に短く）', (await J(`document.getElementById('btnRun').disabled`)) && (await noteText()) === 'この操作は、探す文字が要ります。', await noteText());
+await setVal('sOp', 'delete');
+ok('削除も探す文字が要る', await J(`document.getElementById('btnRun').disabled`));
+await run('merge');
+ok('行マージ（探す文字が空ならファイル全体）：上下が全く同じ行を1行に', (await edv()) === ['apple', 'banana', 'apple', L[5], L[6]].join('\n') + '\n' && (await noteText()).startsWith('2 行をまとめました'), JSON.stringify(await edv()) + await noteText());
+await undo(); ok('元に戻せる', (await edv()) === orig);
+await setVal('sQuery', 'banana'); await run('merge');
+ok('行マージ（探す文字があれば当たった行だけ）', (await edv()) === ['apple', 'apple', 'banana', 'apple', L[5], L[6]].join('\n') + '\n', JSON.stringify(await edv()));
+await undo();
+await setVal('sQuery', ''); await run('ltrim');
+ok('Ltrim：全部の行の行頭の半角・全角スペースとタブ', (await edv()) === [...L.slice(0, 5), 'cherry 　', 'Apple x　'].join('\n') + '\n' && (await noteText()).startsWith('2 行を変えました'), JSON.stringify(await edv()));
+await undo();
+await setVal('sQuery', 'cherry'); await run('rtrim');
+ok('Rtrim：当たった行だけ、行末の空白', (await edv()) === [...L.slice(0, 5), '　 \tcherry', L[6]].join('\n') + '\n' && (await noteText()).startsWith('1 行を変えました'), JSON.stringify(await edv()));
+await undo();
+await setVal('sQuery', 'banana'); await run('rtrim');
+ok('変わらないときはそう出す', (await edv()) === orig && (await noteText()) === '変わる行はありませんでした。' && !(await isDirty()));
+await setVal('sQuery', 'apple'); await run('delete');
+ok('当たった行の削除（大文字小文字を区別しない）', (await edv()) === ['banana', 'banana', L[5]].join('\n') + '\n' && (await noteText()).startsWith('4 行を削除しました'), JSON.stringify(await edv()));
 await saveKey();
-ok('保存すると CRLF のまま', (await readOpfs('lines.txt')) === bytes('apple 1\tapple 3\r\nbanana\r\nApple 2\r\ncherry\r\n'), await readOpfs('lines.txt'));
-await setVal('sJoin', ''); await setVal('sRegex', true); await setVal('sQuery', '^(b|c)'); await click('#btnMergeLines'); await sleep(200); await click('#btnReplace'); await sleep(200);
-ok('正規表現でマージ・空ならあいだに何も入れない', (await edv()) === 'apple 1\tapple 3\nbananacherry\nApple 2\n', JSON.stringify(await edv()));
-await J(`document.execCommand('undo'); 1`); await sleep(200);
-await setVal('sQuery', '^banana$'); await click('#btnMergeLines'); await sleep(200);
-ok('マージは2行以上のときだけ', (await J(`document.getElementById('btnReplace').disabled`)) && (await head()).includes('2行以上'), await head());
-await setVal('sQuery', 'zzz'); await click('#btnDelLines'); await sleep(200);
-ok('当たりが0件なら押せない', (await J(`document.getElementById('btnReplace').disabled`)) && (await head()) === '当たった行はありません', await head());
-await setVal('sQuery', 'banana'); await click('#btnDelLines'); await sleep(200);
-await typeEnd('x'); await click('#btnReplace'); await sleep(200);
-ok('見本のあとで中身が変わったら実行しない', (await edv()).includes('banana') && (await J(`document.getElementById('searchErr').textContent`)).includes('見本のあとで'), await J(`document.getElementById('searchErr').textContent`));
-await J(`(()=>{const e=document.getElementById('editor');e.value=savedText;e.dispatchEvent(new Event('input'));return 1})()`);
+ok('保存すると CRLF のまま', (await readOpfs('lines.txt')) === bytes(['banana', 'banana', L[5]].join('\r\n') + '\r\n'), await readOpfs('lines.txt'));
+await setVal('sRegex', true); await setVal('sQuery', '^ban'); await run('merge');
+ok('正規表現でも当たった行だけ', (await edv()) === ['banana', L[5]].join('\n') + '\n', JSON.stringify(await edv()));
+await undo();
 await J(`toggleMd(); 1`); await sleep(200);   // 窓がボタンにかぶるので、直に呼ぶ
-ok('MD表示中は行のボタンを押せない', await J(`mdMode && document.getElementById('btnDelLines').disabled && document.getElementById('btnMergeLines').disabled`));
+ok('MD表示中は実行できない', (await J(`mdMode && document.getElementById('btnRun').disabled`)) && (await noteText()).includes('MD表示中'), await noteText());
 await J(`toggleMd(); 1`); await sleep(200);
-await J(`closeFind(); 1`);
+await setVal('sRegex', false); await J(`closeFind(); 1`);
 // ===== 名前の変更と移動 =====
 await J(`(async()=>{const r=await navigator.storage.getDirectory();const put=async(d,n,t)=>{const w=await (await d.getFileHandle(n,{create:true})).createWritable();await w.write(t);await w.close()};
  const mv=await r.getDirectoryHandle('mv',{create:true}); const inner=await mv.getDirectoryHandle('inner',{create:true}); await put(inner,'x.md','x');
