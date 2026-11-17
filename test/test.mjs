@@ -134,21 +134,37 @@ const t1 = await J(`(()=>{const r=document.getElementById('findTitle').getBoundi
 ok('タイトルをドラッグで動かせる', Math.round(t1[0] - t0[0]) === -100 && Math.round(t1[1] - t0[1]) === 60, JSON.stringify([t0, t1]));
 // 窓は左の一覧にかぶらない所へ戻しておく
 await J(`(()=>{const d=document.getElementById('findDlg');d.style.left='330px';d.style.top='60px';d.style.width='460px';return 1})()`);
-await setVal('sQuery', 'こんにちは'); await click('#btnSearch'); await sleep(400);
-ok('文字検索：ファイル名・行番号・行', JSON.stringify(await hits()) === JSON.stringify(['2 メモ/今日.md : こんにちは']), JSON.stringify(await hits()));
+const sel = () => J(`(()=>{const e=document.getElementById('editor');return e.value.slice(e.selectionStart,e.selectionEnd)+'@'+e.selectionStart})()`);
+await setVal('sQuery', 'こんにちは'); await click('#btnSearch'); await sleep(300);
+ok('文字検索は今のファイルだけ：行番号と行', JSON.stringify(await hits()) === JSON.stringify(['2 こんにちは']) && (await head()).startsWith('メモ/今日.md に 1 か所'), JSON.stringify(await hits()) + (await head()));
+await setVal('sQuery', 'let'); await click('#btnSearch'); await sleep(300);
+ok('ほかのファイルは探さない', (await hits()).length === 0 && (await head()) === '見つかりませんでした', await head());
 await click('.item[data-path="crlf.txt"]'); await sleep(300);
-await click('#results .hit'); await sleep(400);
-ok('押すとその行を開く', (await J(`(()=>{const e=document.getElementById('editor');return document.getElementById('fileName').textContent+'|'+e.value.slice(e.selectionStart,e.selectionEnd)})()`)) === 'メモ/今日.md|こんにちは');
+await setVal('sRegex', true); await setVal('sQuery', '[abc]');
+const enter = async (shift) => { await J(`document.getElementById('sQuery').focus()`); for (const type of ['rawKeyDown', 'keyUp']) await c.send('Input.dispatchKeyEvent', { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, modifiers: shift ? 8 : 0 }); await sleep(200); };
+await enter(); const s1 = await sel(); await enter(); const s2 = await sel(); await enter(true); const s3 = await sel();
+ok('Enter で次へ・Shift+Enter で前へ', s1 === 'a@0' && s2 === 'b@2' && s3 === 'a@0' && (await J(`document.getElementById('hitInfo').textContent`)) === '1 / 3', [s1, s2, s3].join());
+await click('#btnPrev'); 
+ok('「前へ」は最初から最後へ回る', (await sel()) === 'c@4' && (await J(`document.activeElement.id`)) === 'editor', await sel());
+await click('#btnNext');
+ok('「次へ」は最後から最初へ回る', (await sel()) === 'a@0', await sel());
+await click('#results .hit:nth-child(3)'); await sleep(200);
+ok('結果を押すとその行に移る', (await sel()) === 'b@2', await sel());
 ok('結果を押しても窓は閉じない', await J(`!document.getElementById('findDlg').classList.contains('hidden')`));
-ok('文字検索は文字でないファイルを飛ばす', !(await hits()).some(h => h.includes('bin.png')));
+// 未保存の変更も探す
+await J(`(()=>{const e=document.getElementById('editor');e.focus();e.setSelectionRange(e.value.length,e.value.length);return 1})()`);
+await c.send('Input.insertText', { text: 'zzz' });
+await setVal('sRegex', false); await setVal('sQuery', 'zzz'); await click('#btnSearch'); await sleep(200);
+ok('未保存の変更も含めて探す', JSON.stringify(await hits()) === JSON.stringify(['4 zzz']), JSON.stringify(await hits()));
+await J(`(()=>{const e=document.getElementById('editor');e.value=savedText;e.dispatchEvent(new Event('input'));return 1})()`);
 // 大文字小文字
-await setVal('sQuery', 'LET'); await setVal('sCase', true); await click('#btnSearch'); await sleep(400);
+await setVal('sQuery', 'A'); await setVal('sCase', true); await click('#btnSearch'); await sleep(200);
 const caseOn = (await hits()).length;
-await setVal('sCase', false); await click('#btnSearch'); await sleep(400);
+await setVal('sCase', false); await click('#btnSearch'); await sleep(200);
 ok('大文字小文字を区別の切りかえ', caseOn === 0 && (await hits()).length === 1, caseOn + ' / ' + (await hits()).length);
 // 正規表現
-await setVal('sRegex', true); await setVal('sQuery', '^le.\\s'); await click('#btnSearch'); await sleep(400);
-ok('正規表現で探す', JSON.stringify(await hits()) === JSON.stringify(['1 script.js : let x = 1;']), JSON.stringify(await hits()));
+await setVal('sRegex', true); await setVal('sQuery', '^[a-c]$'); await click('#btnSearch'); await sleep(200);
+ok('正規表現で探す', (await hits()).length === 3, JSON.stringify(await hits()));
 await setVal('sQuery', '('); await click('#btnSearch'); await sleep(200);
 ok('まちがった正規表現は赤で知らせる', (await J(`document.getElementById('sQuery').classList.contains('bad')`)) && (await J(`document.getElementById('searchErr').textContent`)).includes('正規表現がまちがっています'), await J(`document.getElementById('searchErr').textContent`));
 // ===== 置き換え（今開いているファイルだけ・編集画面の中身を置きかえる）=====
@@ -199,12 +215,15 @@ ok('フォルダを中身ごと消す', !(await exists('メモ')) && !(await J(`
 // 編集中で未保存のファイルを消す（script.js は 'Z' が未保存）
 await rclick('.item[data-path="script.js"]'); await click('#ctxDelete'); await sleep(400);
 ok('未保存の変更を先に知らせる', lastDialog.startsWith('開いているノート「script.js」に、保存していない変更'), lastDialog);
+await J(`openFind(false); 1`); await setVal('sQuery', 'a'); await click('#btnSearch'); await sleep(200);
+ok('ファイルを開いていないときは検索も「ファイルを開いてから」', (await head()).includes('ファイルを開いてから'), await head());
 ok('ファイルを開いていないときは置き換えを押せない', await J(`document.getElementById('btnPreview').disabled && document.getElementById('replaceHint').textContent.includes('ファイルを開いてから')`));
 ok('開いていたファイルを消すと編集を閉じる', !(await exists('script.js')) && (await J(`document.getElementById('editor').classList.contains('hidden') && !dirty`)));
 // 削除の失敗を画面に出す
 await J(`root.removeEntry = async () => { throw new DOMException('locked', 'NoModificationAllowedError') }; 1`);
 await rclick('.item[data-path="bin.png"]'); await click('#ctxDelete'); await sleep(400);
 ok('削除の失敗を画面に出す', (await msg()).startsWith('err:削除に失敗しました：bin.png') && (await exists('bin.png')), await msg());
+await J(`delete root.removeEntry; 1`);   // 試しの壊しを戻す
 // ===== 検索の結果を押すと、木もそのファイルの場所へ =====
 await J(`(async()=>{const r=await navigator.storage.getDirectory();for(let i=0;i<60;i++) await r.getDirectoryHandle('d'+String(i).padStart(2,'0'),{create:true});
  let d=await r.getDirectoryHandle('zz',{create:true}); d=await d.getDirectoryHandle('b',{create:true}); d=await d.getDirectoryHandle('c',{create:true});
@@ -223,14 +242,6 @@ await setVal('fQuery', 'ふかい'); await sleep(800);
 await J(`(async()=>{openPaths.clear(); openPaths.add(''); await renderTree(); document.getElementById('tree').scrollTop=0; return 1})()`);
 await click('#fResults .hit'); await sleep(600);
 ok('同じファイルで中身の結果を押しても、木が合う（その行も選ぶ）', (await revealed('zz/b/c/深い.md')) === want('zz/b/c/深い.md') && (await J(`(()=>{const e=document.getElementById('editor');return e.value.slice(e.selectionStart,e.selectionEnd)})()`)) === 'ふかいところ', await revealed('zz/b/c/深い.md'));
-// 窓の文字検索の結果
-await click('.item[data-path="crlf.txt"]'); await sleep(300);
-await J(`(async()=>{openPaths.clear(); openPaths.add(''); await renderTree(); document.getElementById('tree').scrollTop=0; return 1})()`);
-await J(`openFind(false); 1`);
-await setVal('sRegex', false); await setVal('sQuery', 'ふかい'); await click('#btnSearch'); await sleep(500);
-await click('#results .hit'); await sleep(600);
-ok('窓の文字検索の結果を押しても、木が合う', (await revealed('zz/b/c/深い.md')) === want('zz/b/c/深い.md'), await revealed('zz/b/c/深い.md'));
-ok('窓と結果はそのまま', (await J(`!document.getElementById('findDlg').classList.contains('hidden') && document.querySelectorAll('#results .hit').length === 1`)));
 // 続けて別の結果を押す
 await setVal('fQuery', 'crlf'); await sleep(800);
 await click('#fResults .hit'); await sleep(600);
@@ -260,6 +271,8 @@ ok('生の HTML は動かさず文字で見せる', (await mv('script')) === 0 &
 ok('未保存の変更も含めて表示', (await J(`document.getElementById('mdView').textContent.includes('未保存の行')`)) && (await isDirty()));
 await J(`openFind(true); 1`);
 ok('表示中は置き換えできない', await J(`document.getElementById('btnPreview').disabled && document.getElementById('replaceHint').textContent.includes('MD表示中')`));
+await setVal('sRegex', false); await setVal('sQuery', '太字'); await enter();
+ok('MD表示中も検索でき、当たった所に印', (await J(`document.querySelectorAll('#mdView mark').length`)) === 1 && (await J(`document.querySelectorAll('#mdView mark.cur').length`)) === 1 && (await J(`document.getElementById('hitInfo').textContent`)) === '1 / 1');
 await J(`closeFind(); 1`);
 await saveKey();
 ok('表示中も保存できる（未保存の変更を書く）', !(await isDirty()) && (await readOpfs('md.md')) === bytes(MD + '\n\n未保存の行'));
@@ -267,6 +280,71 @@ await click('.item[data-path="crlf.txt"]'); await sleep(300);
 ok('ファイルを切りかえても MD表示のまま', (await J(`!document.getElementById('mdView').classList.contains('hidden') && document.getElementById('editor').classList.contains('hidden') && document.getElementById('mdView').textContent.includes('B$1')`)));
 await click('#btnMd'); await sleep(200);
 ok('「編集に戻る」で編集画面に戻る', (await J(`!document.getElementById('editor').classList.contains('hidden') && document.getElementById('mdView').classList.contains('hidden') && document.getElementById('btnMd').textContent === 'MD表示' && !document.getElementById('btnPreview').disabled`)));
+// ===== 名前の変更と移動 =====
+await J(`(async()=>{const r=await navigator.storage.getDirectory();const put=async(d,n,t)=>{const w=await (await d.getFileHandle(n,{create:true})).createWritable();await w.write(t);await w.close()};
+ const mv=await r.getDirectoryHandle('mv',{create:true}); const inner=await mv.getDirectoryHandle('inner',{create:true}); await put(inner,'x.md','x');
+ const dst=await r.getDirectoryHandle('dst',{create:true}); await put(dst,'same.md','D'); await put(r,'same.md','S'); await put(r,'note.md','n');
+ ['mv','mv/inner','dst'].forEach(p=>openPaths.add(p)); await renderTree(); return 1})()`);
+const curName = () => J(`document.getElementById('fileName').textContent`);
+const selRow = () => J(`[...document.querySelectorAll('#tree .item.selected')].map(e=>e.dataset.path).join()`);
+const typeEnd = async t => { await J(`(()=>{const e=document.getElementById('editor');e.focus();e.setSelectionRange(e.value.length,e.value.length);return 1})()`); await c.send('Input.insertText', { text: t }); };
+const drag = async (from, to) => { await J(`(()=>{const q=p=>document.querySelector('#tree .item[data-path="'+p+'"]');const dt=new DataTransfer();
+  q(${JSON.stringify(from)}).dispatchEvent(new DragEvent('dragstart',{bubbles:true,dataTransfer:dt})); const d=q(${JSON.stringify(to)});
+  d.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:dt})); d.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:dt})); return 1})()`); await sleep(600); };
+// 名前の変更：開いていて未保存のファイル
+await click('.item[data-path="note.md"]'); await sleep(300); await typeEnd('N');
+promptText = 'note2.md'; dialogs = [];
+await rclick('.item[data-path="note.md"]'); await click('#ctxRename'); await sleep(600);
+ok('名前の変更：今の名前を入れた欄を出す', dialogs[0] === 'prompt');
+ok('未保存なら先に保存するか聞いて保存する', dialogs.includes('confirm') && (await readOpfs('note2.md')) === bytes('nN') && !(await exists('note.md')), dialogs.join());
+ok('開いたまま新しい名前・木の印も', (await curName()) === 'note2.md' && (await selRow()) === 'note2.md' && !(await isDirty()), (await curName()) + ' / ' + (await selRow()));
+await typeEnd('2'); await saveKey();
+ok('新しい名前で保存できる', (await readOpfs('note2.md')) === bytes('nN2'));
+promptText = 'same.md'; await rclick('.item[data-path="note2.md"]'); await click('#ctxRename'); await sleep(400);
+ok('同じ名前があれば断る', (await msg()).includes('もうあります') && (await readOpfs('same.md')) === bytes('S') && (await exists('note2.md')), await msg());
+promptText = 'a:b'; await rclick('.item[data-path="note2.md"]'); await click('#ctxRename'); await sleep(300);
+ok('Windows で使えない名前は断る', (await msg()).startsWith('err') && (await exists('note2.md')), await msg());
+// 開いているファイルを含むフォルダの名前を変える
+await click('.item[data-path="mv/inner/x.md"]'); await sleep(300);
+promptText = 'mv2'; await rclick('.item[data-path="mv"]'); await click('#ctxRename'); await sleep(600);
+ok('フォルダの名前を変えても、開いたまま・木の印も', (await curName()) === 'mv2/inner/x.md' && (await selRow()) === 'mv2/inner/x.md' && !(await exists('mv')), (await curName()) + ' / ' + (await selRow()));
+await typeEnd('!'); await saveKey();
+ok('新しい場所で保存できる', (await readOpfs('mv2/inner/x.md')) === bytes('x!'));
+// ドラッグで移動
+dialogs = []; await drag('same.md', 'dst');
+ok('行き先に同じ名前があれば上書きせず断る', (await msg()).includes('もうあります') && (await readOpfs('dst/same.md')) === bytes('D') && (await readOpfs('same.md')) === bytes('S'), await msg());
+dialogs = []; lastDialog = ''; await drag('note2.md', 'dst');
+ok('ドラッグで移動（確かめてから）', lastDialog.includes('「note2.md」を「dst」へ移動します') && (await readOpfs('dst/note2.md')) === bytes('nN2') && !(await exists('note2.md')), lastDialog);
+await drag('dst/note2.md', '');
+ok('いちばん上へも移動できる', (await exists('note2.md')) && !(await exists('dst/note2.md')));
+confirmAnswer = false; await drag('note2.md', 'dst'); confirmAnswer = true;
+ok('確かめで「いいえ」なら動かさない', (await exists('note2.md')) && !(await exists('dst/note2.md')));
+// メニューの「移動…」：開いているファイルを含むフォルダ
+await rclick('.item[data-path="mv2"]'); await click('#ctxMove'); await sleep(400);
+const opts = await J(`[...document.getElementById('moveDest').options].map(o=>o.value)`);
+ok('移動先の一覧（自分と自分の中は出さない）', opts.includes('') && opts.includes('dst') && !opts.some(o => o === 'mv2' || o.startsWith('mv2/')), JSON.stringify(opts));
+await J(`(()=>{const s=document.getElementById('moveDest');s.value='dst';return 1})()`); await click('#moveOk'); await sleep(600);
+ok('メニューで移動・開いたまま新しい場所', (await readOpfs('dst/mv2/inner/x.md')) === bytes('x!') && !(await exists('mv2')) && (await curName()) === 'dst/mv2/inner/x.md' && (await selRow()) === 'dst/mv2/inner/x.md', (await curName()) + ' / ' + (await selRow()));
+await drag('dst', 'dst/mv2');
+ok('フォルダを自分の中へは移動しない', (await msg()).includes('自分の中') && (await exists('dst/mv2/inner/x.md')), await msg());
+// move() が使えないとき：コピー → 中身を確かめる → 元を消す
+await J(`(()=>{window.__mv={}; for (const C of [FileSystemHandle, FileSystemFileHandle, FileSystemDirectoryHandle]) { window.__mv[C.name]=Object.getOwnPropertyDescriptor(C.prototype,'move'); Object.defineProperty(C.prototype,'move',{value:undefined,configurable:true,writable:true}); } return 1})()`);
+promptText = 'crlf2.txt'; await rclick('.item[data-path="crlf.txt"]'); await click('#ctxRename'); await sleep(600);
+ok('move() なしでも名前を変える（バイトそのまま）', (await readOpfs('crlf2.txt')) === bytes('a\r\nB$1\r\nc\r\n') && !(await exists('crlf.txt')), await msg());
+await drag('dst/mv2', '');
+ok('move() なしでもフォルダを中身ごと移動・開いたまま', (await readOpfs('mv2/inner/x.md')) === bytes('x!') && !(await exists('dst/mv2')) && (await curName()) === 'mv2/inner/x.md', (await curName()) + ' ' + await msg());
+await typeEnd('?'); await saveKey();
+ok('コピーで動かしたあとも保存できる', (await readOpfs('mv2/inner/x.md')) === bytes('x!?'));
+// コピーの途中で失敗 → 元は消さない
+await J(`(()=>{window.__cw=FileSystemFileHandle.prototype.createWritable; FileSystemFileHandle.prototype.createWritable=async function(){ throw new DOMException('disk full','QuotaExceededError') }; return 1})()`);
+promptText = 'bom2.md'; await rclick('.item[data-path="bom.md"]'); await click('#ctxRename'); await sleep(600);
+ok('コピーに失敗したら元は消さず、画面に出す', (await msg()).includes('コピーの途中で失敗しました。元は消していません') && (await readOpfs('bom.md')) === '239,187,191,' + bytes('a\nB$1') && !(await exists('bom2.md')), await msg());
+await J(`(()=>{FileSystemFileHandle.prototype.createWritable=window.__cw; for (const C of [FileSystemHandle, FileSystemFileHandle, FileSystemDirectoryHandle]) { const d=window.__mv[C.name]; if (d) Object.defineProperty(C.prototype,'move',d); else delete C.prototype.move; } return 1})()`);
+// 未保存で「キャンセル」なら変えない
+await typeEnd('#'); confirmAnswer = false; promptText = 'x2.md';
+await rclick('.item[data-path="mv2/inner/x.md"]'); await click('#ctxRename'); await sleep(400); confirmAnswer = true;
+ok('未保存で保存を断ったら変えない', (await exists('mv2/inner/x.md')) && !(await exists('mv2/inner/x2.md')) && (await isDirty()));
+await J(`setDirty(false); 1`);
 // ===== 一覧の幅 =====
 const sideW = () => J(`Math.round(document.getElementById('side').getBoundingClientRect().width)`);
 const dragSplit = async dx => { const r = await J(`(()=>{const b=document.getElementById('splitter').getBoundingClientRect();return [b.x+2,b.y+100]})()`);
@@ -284,10 +362,10 @@ await dragSplit(-2000); await dragSplit(70);
 ok('幅を覚える', (await J(`localStorage.getItem('note-manager.sideWidth')`)) === '250', await J(`localStorage.getItem('note-manager.sideWidth')`));
 await c.send('Page.reload'); await sleep(1500);
 ok('次に開いても同じ幅', (await sideW()) === 250, String(await sideW()));
-ok('再読み込みで前回のフォルダが開く', (await J(`document.getElementById('rootName').textContent`)).length > 0 && (await J(`!!document.querySelector('.item[data-path="crlf.txt"]')`)), await J(`document.getElementById('rootName').textContent`));
+ok('再読み込みで前回のフォルダが開く', (await J(`document.getElementById('rootName').textContent`)).length > 0 && (await J(`!!document.querySelector('.item[data-path="crlf2.txt"]')`)), await J(`document.getElementById('rootName').textContent`));
 // localStorage が使えないときは決まった幅で動く
 await c.send('Page.addScriptToEvaluateOnNewDocument', { source: "Object.defineProperty(window, 'localStorage', { get() { throw new DOMException('blocked', 'SecurityError'); } });" });
 await c.send('Page.reload'); await sleep(1500);
-ok('localStorage が使えなくても決まった幅で開く', (await sideW()) === 300 && (await J(`!!document.querySelector('.item[data-path="crlf.txt"]')`)), String(await sideW()));
+ok('localStorage が使えなくても決まった幅で開く', (await sideW()) === 300 && (await J(`!!document.querySelector('.item[data-path="crlf2.txt"]')`)), String(await sideW()));
 console.log(fails ? `NG ${fails} 件` : 'ALL OK');
 c.close(); srv.kill(); process.exit(fails ? 1 : 0);
