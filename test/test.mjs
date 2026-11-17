@@ -150,28 +150,43 @@ await setVal('sRegex', true); await setVal('sQuery', '^le.\\s'); await click('#b
 ok('正規表現で探す', JSON.stringify(await hits()) === JSON.stringify(['1 script.js : let x = 1;']), JSON.stringify(await hits()));
 await setVal('sQuery', '('); await click('#btnSearch'); await sleep(200);
 ok('まちがった正規表現は赤で知らせる', (await J(`document.getElementById('sQuery').classList.contains('bad')`)) && (await J(`document.getElementById('searchErr').textContent`)).includes('正規表現がまちがっています'), await J(`document.getElementById('searchErr').textContent`));
-// ===== 置き換え（全部のファイル）=====
-await setVal('sRegex', false); await setVal('sCase', true); await setVal('sQuery', 'b'); await setVal('sReplace', 'B$1'); await setVal('sScope', 'all');
-await click('#btnPreview'); await sleep(500);
-ok('見本：件数', (await head()).startsWith('2 個のファイルで 2 か所'), await head());
-ok('見本：前→後', (await J(`[...document.querySelectorAll('#results .before,#results .after')].map(e=>e.textContent).join('|')`)).includes('2: b|2: B$1'), await J(`[...document.querySelectorAll('#results .before,#results .after')].map(e=>e.textContent).join('|')`));
-ok('見本ではまだ書かない', (await readOpfs('crlf.txt')) === '97,13,10,98,13,10,99,13,10');
-await click('#btnReplace'); await sleep(500);
-ok('置き換えたファイルの数', (await msg()) === 'ok:2 個のファイルを置き換えました。', await msg());
-ok('CRLF を保って置き換え（ふつうの検索は $1 をそのまま）', (await readOpfs('crlf.txt')) === bytes('a\r\nB$1\r\nc\r\n'), await readOpfs('crlf.txt'));
-ok('BOM を保って置き換え', (await readOpfs('bom.md')) === '239,187,191,' + bytes('a\nB$1'), await readOpfs('bom.md'));
-ok('文字でないファイルは変えない', (await readOpfs('bin.png')) === '137,80,78,71,0,0,1');
-// ===== 置き換え（今のファイル・正規表現のグループ）=====
-await click('.item[data-path="script.js"]'); await sleep(300);
-await setVal('sRegex', true); await setVal('sQuery', '(\\d)'); await setVal('sReplace', '[$1]'); await setVal('sScope', 'current');
-await click('#btnPreview'); await sleep(400);
-ok('今のファイルだけの見本', (await head()).startsWith('1 個のファイルで 1 か所'), await head());
-await click('#btnReplace'); await sleep(400);
-ok('正規表現の $1 で置き換え・画面も新しく', (await readOpfs('script.js')) === bytes('let x = [1];\n') && (await J(`document.getElementById('editor').value`)) === 'let x = [1];\n', await readOpfs('script.js'));
-// 未保存があるときは置き換えない
-await J(`document.getElementById('editor').focus()`); await c.send('Input.insertText', { text: 'Z' });
+// ===== 置き換え（今開いているファイルだけ・編集画面の中身を置きかえる）=====
+const edv = () => J(`document.getElementById('editor').value`);
+const isDirty = () => J(`!document.getElementById('dirtyMark').classList.contains('hidden')`);
+const saveKey = async () => { for (const type of ['rawKeyDown', 'keyUp']) await c.send('Input.dispatchKeyEvent', { type, key: 's', code: 'KeyS', windowsVirtualKeyCode: 83, modifiers: 2 }); await sleep(400); };
+ok('範囲の選びはない', await J(`!document.getElementById('sScope')`));
+await click('.item[data-path="crlf.txt"]'); await sleep(300);
+await setVal('sRegex', false); await setVal('sCase', true); await setVal('sQuery', 'b'); await setVal('sReplace', 'B$1');
 await click('#btnPreview'); await sleep(300);
-ok('未保存があるときは置き換えない', (await J(`document.getElementById('searchErr').textContent`)).includes('先に保存'));
+ok('見本：今のファイルの件数', (await head()).startsWith('crlf.txt の 1 か所'), await head());
+ok('見本：前→後', (await J(`[...document.querySelectorAll('#results .before,#results .after')].map(e=>e.textContent).join('|')`)) === '2: b|2: B$1', await J(`[...document.querySelectorAll('#results .before,#results .after')].map(e=>e.textContent).join('|')`));
+ok('見本ではまだ変えない', (await edv()) === 'a\nb\nc\n' && !(await isDirty()));
+await click('#btnReplace'); await sleep(300);
+ok('編集画面だけ置きかえ（ふつうの検索は $1 をそのまま）', (await edv()) === 'a\nB$1\nc\n', JSON.stringify(await edv()));
+ok('未保存の印が付き、ディスクはまだ元のまま', (await isDirty()) && (await readOpfs('crlf.txt')) === '97,13,10,98,13,10,99,13,10');
+ok('置き換えた数を出す', (await msg()).startsWith('ok:1 か所を置き換えました'), await msg());
+await J(`document.execCommand('undo'); 1`); await sleep(200);
+ok('Ctrl+Z（元に戻す）で戻せる', (await edv()) === 'a\nb\nc\n' && !(await isDirty()), JSON.stringify(await edv()));
+await click('#btnPreview'); await sleep(300); await click('#btnReplace'); await sleep(300);
+await saveKey();
+ok('保存すると CRLF のまま書く', (await readOpfs('crlf.txt')) === bytes('a\r\nB$1\r\nc\r\n'), await readOpfs('crlf.txt'));
+await click('.item[data-path="bom.md"]'); await sleep(300);
+await click('#btnPreview'); await sleep(300); await click('#btnReplace'); await sleep(300); await saveKey();
+ok('保存すると BOM のまま書く', (await readOpfs('bom.md')) === '239,187,191,' + bytes('a\nB$1'), await readOpfs('bom.md'));
+// 正規表現のグループ
+await click('.item[data-path="script.js"]'); await sleep(300);
+await setVal('sRegex', true); await setVal('sQuery', '(\\d)'); await setVal('sReplace', '[$1]');
+await click('#btnPreview'); await sleep(300);
+ok('正規表現の見本', (await head()).startsWith('script.js の 1 か所'), await head());
+await click('#btnReplace'); await sleep(300);
+ok('正規表現の $1 で置き換え', (await edv()) === 'let x = [1];\n', JSON.stringify(await edv()));
+await saveKey();
+ok('保存で書ける', (await readOpfs('script.js')) === bytes('let x = [1];\n'));
+// 見本のあとで中身が変わったら置きかえない
+await setVal('sQuery', '(\\[)'); await setVal('sReplace', '<'); await click('#btnPreview'); await sleep(300);
+await J(`document.getElementById('editor').focus()`); await c.send('Input.insertText', { text: 'Z' });
+await click('#btnReplace'); await sleep(300);
+ok('見本のあとで変わったら置きかえない', (await J(`document.getElementById('searchErr').textContent`)).includes('見本のあとで') && (await edv()).includes('['), await J(`document.getElementById('searchErr').textContent`));
 // ===== 右クリックで削除 =====
 await rclick('.item[data-path="bin.png"]');
 ok('右クリックで「削除」が出る', !(await J(`document.getElementById('ctxMenu').classList.contains('hidden')`)));
@@ -183,6 +198,7 @@ ok('フォルダを中身ごと消す', !(await exists('メモ')) && !(await J(`
 // 編集中で未保存のファイルを消す（script.js は 'Z' が未保存）
 await rclick('.item[data-path="script.js"]'); await click('#ctxDelete'); await sleep(400);
 ok('未保存の変更を先に知らせる', lastDialog.startsWith('開いているノート「script.js」に、保存していない変更'), lastDialog);
+ok('ファイルを開いていないときは置き換えを押せない', await J(`document.getElementById('btnPreview').disabled && document.getElementById('replaceHint').textContent.includes('ファイルを開いてから')`));
 ok('開いていたファイルを消すと編集を閉じる', !(await exists('script.js')) && (await J(`document.getElementById('editor').classList.contains('hidden') && !dirty`)));
 // 削除の失敗を画面に出す
 await J(`root.removeEntry = async () => { throw new DOMException('locked', 'NoModificationAllowedError') }; 1`);
